@@ -1,0 +1,22 @@
+#!/bin/sh
+# ~/.config/scripts/login-look.sh
+# Run this in .xprofile or dwm autostart
+
+WALL=$(find "/usr/share/backgrounds" -type f | shuf -n 1)
+
+xwallpaper --zoom "$WALL"
+
+wal -i "$WALL" > /dev/null
+
+DWM_SRC="$HOME/.local/src/dwm"
+DMENU_SRC="$HOME/.local/src/dmenu"
+
+# Run compilation in the background using sudo, output hidden
+if [ -f "$HOME/.cache/wal/colors-wal-dwm.h" ]; then
+    (cd "$DWM_SRC" && sudo make clean install > /dev/null 2>&1 &)
+fi
+
+if [ -f "$HOME/.local/wal/colors-wal-dmenu.h" ]; then
+    (cd "$DMENU_SRC" && sudo make clean install > /dev/null 2>&1 &)
+fi
+

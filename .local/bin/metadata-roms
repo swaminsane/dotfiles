@@ -1,0 +1,74 @@
+#!/bin/bash
+
+ROM_DIR="$HOME/Games/ROMs"
+META_DIR="$HOME/.cache/roms-metadata"
+CACHE_DIR="$META_DIR/cache"
+CACHE_FILE="$CACHE_DIR/roms.txt"
+
+mkdir -p "$CACHE_DIR"
+> "$CACHE_FILE"
+
+trim() {
+    local var="$1"
+    var="${var#"${var%%[![:space:]]*}"}"
+    var="${var%"${var##*[![:space:]]}"}"
+    printf '%s' "$var"
+}
+
+echo "Building XML cache..."
+
+# Loop systems
+for system_path in "$META_DIR/gamelists"/*; do
+    system=$(basename "$system_path")
+    xml="$system_path/gamelist.xml"
+
+    [ ! -f "$xml" ] && continue
+
+    echo "Processing $system..."
+
+    # Parse XML safely
+awk -v sys="$system" '
+BEGIN {
+    RS="</game>"
+    FS="\n"
+}
+
+/<game>/ {
+    path=""; name=""; desc=""; genre=""; players=""
+
+    for(i=1;i<=NF;i++) {
+        if($i ~ /<path>/) {
+            gsub(/.*<path>|<\/path>.*/, "", $i)
+            path=$i
+        }
+        if($i ~ /<name>/) {
+            gsub(/.*<name>|<\/name>.*/, "", $i)
+            name=$i
+        }
+        if($i ~ /<desc>/) {
+            gsub(/.*<desc>|<\/desc>.*/, "", $i)
+            desc=$i
+        }
+        if($i ~ /<genre>/) {
+            gsub(/.*<genre>|<\/genre>.*/, "", $i)
+            genre=$i
+        }
+        if($i ~ /<players>/) {
+            gsub(/.*<players>|<\/players>.*/, "", $i)
+            players=$i
+        }
+    }
+
+    if(path != "" && name != "") {
+        gsub(/^\.\//, "", path)
+        gsub(/\|/, "/", desc)
+
+        printf "%s|%s|%s|%s|%s|%s\n",
+            sys, name, path, genre, players, desc
+    }
+}
+' "$xml" >> "$CACHE_FILE"
+
+done
+
+echo "✅ Cache built at: $CACHE_FILE"

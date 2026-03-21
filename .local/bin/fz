@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# ==============================
+# 1. SETUP
+# ==============================
+OPEN_CMD="xdg-open"
+[[ "$OSTYPE" == "darwin"* ]] && OPEN_CMD="open"
+
+curr_dir=$(pwd)
+show_hidden=false
+
+FZF_COLORS="--color=fg:-1,bg:-1,hl:#268bd2,fg+:-1,bg+:#3a3a3a,hl+:#268bd2,info:#bcbcbc,prompt:#bcbcbc,pointer:#ffffff,marker:#ffffff,spinner:#bcbcbc,header:#bcbcbc"
+
+
+# ==============================
+# 2. BUILD FILE LIST
+# ==============================
+build_list() {
+    local dir="$1"
+
+    if [ "$show_hidden" = true ]; then
+        (
+            # Directories (visible)
+            find "$dir" -maxdepth 1 -type d ! -path '*/.*' -printf "%P\n" | sort
+
+            # Files (visible)
+            find "$dir" -maxdepth 1 -type f ! -path '*/.*' -printf "%P\n" | sort
+
+            # Hidden (dirs + files)
+            find "$dir" -maxdepth 1 -path '*/.*' -printf "%P\n" | sort
+        )
+    else
+        (
+            # Directories
+            find "$dir" -maxdepth 1 -type d ! -path '*/.*' -printf "%P\n" | sort
+
+            # Files
+            find "$dir" -maxdepth 1 -type f ! -path '*/.*' -printf "%P\n" | sort
+        )
+    fi
+}
+
+# ==============================
+# 3. FILE PICKER (FZF UI)
+# ==============================
+file_picker() {
+    local header_status
+    [ "$show_hidden" = true ] && header_status="[SHOWING HIDDEN]" || header_status="[HIDDEN EXCLUDED]"
+
+    build_list "$curr_dir" | grep -v '^$' | grep -v '^\.$' | fzf \
+        --height=80% \
+        $FZF_COLORS \
+        --layout=reverse \
+        --border=rounded \
+        --margin=5%,15% \
+        --header=" Location: $curr_dir | $header_status
+ [Right/Enter] Select | [Left] Back | [/] Toggle Hidden | [Esc] Quit" \
+        --prompt=" SEARCH > " \
+        --bind "/:become(echo toggle_hidden)" \
+        --bind "right:accept,left:become(echo ..)"
+}
+
+# ==============================
+# 4. APP SELECTOR
+# ==============================
+open_with_app() {
+    local file="$1"
+    local ext="${file##*.}"
+
+    case "${ext,,}" in
+        mp3|flac|wav|ogg|m4a) apps=("Default" "cmus" "vlc" "mpv") ;;
+        mp4|mkv|mov|avi)      apps=("Default" "mpv" "vlc") ;;
+        pdf|epub)             apps=("Default" "zathura" "evince") ;;
+        jpg|png|webp|gif)     apps=("Default" "feh" "sxiv") ;;
+        *)                    apps=("Default" "vim" "nano" "cat") ;;
+    esac
+
+    chosen_app=$(printf "%s\n" "${apps[@]}" | fzf \
+        $FZF_COLORS \
+        --height=40% \
+        --reverse \
+        --border=sharp \
+        --margin=10%,30% \
+        --header=" Open '$file' with:
+ [Left/Esc] Return" \
+        --bind "left:abort")
+
+    [[ -z "$chosen_app" ]] && return
+
+    case "$chosen_app" in
+        cmus)
+            cmus-remote -q "$curr_dir/$file" && cmus-remote -p >/dev/null 2>&1
+            ;;
+        vim|nano)
+            "$chosen_app" "$curr_dir/$file"
+            ;;
+        Default)
+            $OPEN_CMD "$curr_dir/$file" >/dev/null 2>&1 &
+            ;;
+        *)
+            "$chosen_app" "$curr_dir/$file" >/dev/null 2>&1 &
+            ;;
+    esac
+
+    exit 0
+}
+
+# ==============================
+# 5. MAIN LOOP
+# ==============================
+while true; do
+    selection=$(file_picker)
+
+    [[ -z "$selection" ]] && break
+
+    case "$selection" in
+        toggle_hidden)
+            [[ "$show_hidden" = true ]] && show_hidden=false || show_hidden=true
+            continue
+            ;;
+        "..")
+            curr_dir=$(dirname "$curr_dir")
+            continue
+            ;;
+    esac
+
+    full_path="$curr_dir/$selection"
+
+    if [[ -d "$full_path" ]]; then
+        curr_dir="$full_path"
+        continue
+    fi
+
+    # Executable safeguard
+    ext="${selection##*.}"
+    case "${ext,,}" in
+        py|sh|bash|js|txt|md|mp3|mp4|mkv|jpg|png|webp) is_protected=true ;;
+        *) is_protected=false ;;
+    esac
+
+    if [[ -x "$full_path" && "$is_protected" = false ]]; then
+        "$full_path" >/dev/null 2>&1 &
+        exit 0
+    fi
+
+    # ✅ Automatically open PDF/EPUB in Zathura
+    case "${ext,,}" in
+        pdf)
+            zathura "$full_path" >/dev/null 2>&1 &
+            exit 0
+            ;;
+    esac
+
+    # Open other files via FZF app selector
+    open_with_app "$selection"
+done

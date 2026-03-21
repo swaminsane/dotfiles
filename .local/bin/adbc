@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Start ADB in TCP/IP mode
+echo "Setting device to TCP/IP mode..."
+adb tcpip 5555
+
+# So that it can connect(maybe add boolean)
+read -p "Press enter when previous process done " confirm
+
+# Get the device IP addr
+ip=$(adb shell ip route |tail -n 1 |  awk '{print $9}')
+
+read -p "Connect to $ip" confirm #make boolean for this too
+
+# Connect to the device using that IP
+echo "Connecting to $ip"
+adb connect "$ip:5555"

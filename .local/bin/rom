@@ -1,0 +1,255 @@
+#!/bin/bash
+
+ROM_DIR="/sdc/ROMs"
+META_DIR="$HOME/.cache/roms-metadata"
+CACHE_FILE="$META_DIR/cache/roms.txt"
+PLAYLOG="$META_DIR/cache/playlog.txt"
+CORE_DIR="$HOME/cores"
+
+FZF_COLORS="--color=fg:-1,bg:-1,hl:#268bd2,fg+:-1,bg+:#3a3a3a,hl+:#268bd2"
+
+[ ! -f "$CACHE_FILE" ] && echo "Run metadata script first!" && exit 1
+mkdir -p "$(dirname "$PLAYLOG")"
+touch "$PLAYLOG"
+
+# ==============================
+# CORE MAP
+# ==============================
+get_core() {
+    case "$1" in
+        gba) echo "mgba_libretro.so" ;;
+        gb) echo "gearboy_libretro.so" ;;
+        gbc) echo "gearboy_libretro.so" ;;
+        gba) echo "mgba_libretro.so" ;;
+
+        snes) echo "snes9x_libretro.so" ;;
+        nes) echo "quicknes_libretro.so" ;;
+        tg16) echo "mednafen_pce_libretro.so" ;;
+     
+
+
+   *) echo "" ;;
+    esac
+}
+
+# ==============================
+# LAUNCH FUNCTION
+# ==============================
+launch_game() {
+    local system="$1"
+    local rom_path="$2"
+
+    echo "Launching: $rom_path" >> "$PLAYLOG"
+
+    # Windows executables
+    case "$rom_path" in
+        *.exe)
+            /usr/bin/wine "$rom_path" &
+            wait
+            exit 0
+            ;;
+    esac
+
+    # Linux executables / AppImages / shell scripts
+    if file "$rom_path" | grep -q "ELF"; then
+        chmod +x "$rom_path" 2>/dev/null
+        "$rom_path" &
+        wait
+        exit 0
+    fi
+
+    case "$rom_path" in
+        *.sh)
+            bash "$rom_path" &
+            wait
+            exit 0
+            ;;
+        *.AppImage)
+            chmod +x "$rom_path" 2>/dev/null
+            "$rom_path" &
+            wait
+            exit 0
+            ;;
+    esac
+
+
+    # Standalone emulators
+    case "$system" in
+        psp)
+            /usr/local/bin/PPSSPP.AppImage "$rom_path" &
+            wait
+            exit 0
+            ;;
+        ps2)
+            /usr/local/bin/PCSX2.AppImage "$rom_path" &
+            wait
+            exit 0
+            ;;
+    esac
+
+    # RetroArch for other ROMs
+    core_name=$(get_core "$system")
+    if [ -n "$core_name" ]; then
+        core_path="$CORE_DIR/$core_name"
+        if [ -f "$core_path" ]; then
+            retroarch -f -L "$core_path" "$rom_path" &
+            wait
+            exit 0
+        else
+            echo "Warning: Core not found: $core_name"
+            retroarch -f "$rom_path" &
+            wait
+            exit 0
+        fi
+    else
+        echo "Unknown system, trying to execute directly..."
+        "$rom_path" &
+        wait
+        exit 0
+    fi
+}
+
+# ==============================
+# SYSTEM PICKER
+# ==============================
+system_picker() {
+    find "$ROM_DIR" -mindepth 1 -maxdepth 1 -type d -not -name ".*" 2>/dev/null | \
+    while read -r dir; do
+        system=$(basename "$dir")
+        if find "$dir" -type f ! -name "systeminfo.txt" 2>/dev/null | grep -q .; then
+            echo "$system"
+        fi
+    done | sort | \
+    fzf \
+        --height=80% \
+        $FZF_COLORS \
+        --layout=reverse \
+        --border=rounded \
+        --margin=5%,15% \
+        --prompt=" SYSTEMS > " \
+        --header=" ROM Launcher
+Enter: Select | Esc: Quit"
+}
+
+# ==============================
+# ROM PICKER
+# ==============================
+rom_picker() {
+    local system="$1"
+    local current="$2"
+
+    local base="$ROM_DIR/$system"
+    local dir="$base/$current"
+
+    (
+    [ -n "$current" ] && echo ".."
+
+    find "$dir" -mindepth 1 -maxdepth 1 -type d -not -name ".*" 2>/dev/null | while read -r d; do
+        basename "$d"
+    done
+
+    find "$dir" -maxdepth 1 -type f ! -name "systeminfo.txt" 2>/dev/null | while read -r f; do
+        basename "$f"
+    done
+    ) | sort | \
+    fzf \
+        --height=85% \
+        $FZF_COLORS \
+        --layout=reverse \
+        --border=rounded \
+        --margin=5%,15% \
+        --bind "right:accept,left:execute-silent(echo BACK)+abort" \
+        --prompt=" $system > " \
+        --header=" Enter/→: Open | ←: Back | Esc: Exit" \
+        --preview-window=right:65%:border-left:wrap \
+        --preview="
+item={}
+full=\"$ROM_DIR/$system/$current/\$item\"
+
+echo \"🎮 \$item\"
+echo \"------------------------\"
+
+if [ -f \"\$full\" ]; then
+    filename=\$(basename \"\$item\")
+    base=\"\${filename%.*}\"
+    clean=\$(echo \"\$base\" | sed 's/ *([^)]*)//g; s/ *\\[[^]]*\\]//g')
+
+    # Metadata lookup
+    meta=\$(grep \"^$system|\" \"$CACHE_FILE\" | grep -F \"|\$filename|\" 2>/dev/null | head -n1)
+    if [ -z \"\$meta\" ]; then
+        meta=\$(grep \"^$system|\" \"$CACHE_FILE\" | grep -i \"|\$clean\" 2>/dev/null | head -n1)
+    fi
+
+    if [ -n \"\$meta\" ]; then
+        IFS='|' read _ _ name path genre players desc <<< \"\$meta\"
+        echo \"🎯 \${genre:-Unknown} | 👥 \${players:-?}\"
+        echo \"\"
+        echo \"\$desc\" | fold -s -w 60
+    else
+        echo \"🎯 Unknown | 👥 ?\"
+        echo \"\"
+        echo \"🛈 No metadata available\"
+    fi
+
+    echo \"\"
+    echo \"[Cover]\"
+    echo \"------------------------\"
+
+    img=\"$META_DIR/$system/covers/\${clean}.png\"
+    if [ ! -f \"\$img\" ]; then
+        img=\$(find \"$META_DIR/$system/covers\" -iname \"\${clean}*.png\" -o -iname \"\${clean}*.jpg\" 2>/dev/null | head -n1)
+    fi
+
+    if [ -f \"\$img\" ]; then
+        chafa --size=45x22 \"\$img\" 2>/dev/null
+    else
+        echo \"No cover\"
+    fi
+
+else
+    echo \"📁 Directory\"
+fi
+"
+}
+
+# ==============================
+# MAIN LOOP
+# ==============================
+while true; do
+    system=$(system_picker)
+    [[ -z "$system" ]] && exit
+
+    current=""
+
+    while true; do
+        choice=$(rom_picker "$system" "$current")
+        status=$?
+
+        if [ "$choice" = "BACK" ]; then
+            current=$(dirname "$current")
+            [[ "$current" == "." ]] && current=""
+            continue
+        fi
+
+        if [ $status -ne 0 ]; then
+            break
+        fi
+
+        if [ "$choice" = ".." ]; then
+            current=$(dirname "$current")
+            [[ "$current" == "." ]] && current=""
+            continue
+        fi
+
+        full="$ROM_DIR/$system/$current/$choice"
+
+        if [ -d "$full" ]; then
+            current="$current/$choice"
+            current="${current#/}"
+            continue
+        fi
+
+        launch_game "$system" "$full"
+        exit 0
+    done
+done
