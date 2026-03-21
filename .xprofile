@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# Source environment too
+[ -f "$HOME/.profile" ] && . "$HOME/.profile"
+
+
+# Only run these in dwm
+if [ "$WM" = "dwm" ]; then
+    pidof dwmblocks >/dev/null || dwmblocks &
+    pidof xsct >/dev/null || xsct 4200 &
+#    $HOME/.local/bin/setbg
+    picom &
+    nm-applet &
+fi

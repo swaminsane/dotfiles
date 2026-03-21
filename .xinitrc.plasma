@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# Source environment from .profile
+[ -f "$HOME/.profile" ] && . "$HOME/.profile"
+
+export WM="plasma"
+
+# Start dbus if not already running
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    eval "$(dbus-launch --sh-syntax --exit-with-session)"
+fi
+
+# Load background GUI apps if needed
+[ -f "$HOME/.xprofile" ] && . "$HOME/.xprofile"
+
+# Log errors to a file
+exec startplasma-x11 > "$HOME/plasma.log" 2>&1
