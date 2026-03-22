@@ -130,3 +130,4 @@ if ! shopt -oq posix; then
 fi
 export PATH="$HOME/.npm-global/bin:$PATH"
 
+export PATH="$HOME/.local/src/nvim-linux-x86_64/bin:$PATH"
