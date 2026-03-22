@@ -1,0 +1,3 @@
+set recolor false
+set pages-per-row 2
+set first-page-column 1:2
