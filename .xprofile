@@ -10,5 +10,7 @@ if [ "$WM" = "dwm" ]; then
     pidof xsct >/dev/null || xsct 4200 &
 #    $HOME/.local/bin/setbg
     picom &
+    dunst &
+    feh --bg-fill --randomize /usr/share/backgrounds/
     nm-applet &
 fi
