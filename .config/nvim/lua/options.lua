@@ -13,3 +13,8 @@ vim.opt.termguicolors = true   -- full colors
 vim.opt.scrolloff = 8          -- keep 8 lines above/below cursor
 vim.opt.clipboard = "unnamedplus" -- use system clipboard
 
+vim.filetype.add({
+  extension = {
+    tex = "tex",
+  },
+})

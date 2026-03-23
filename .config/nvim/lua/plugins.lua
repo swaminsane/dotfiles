@@ -14,6 +14,17 @@ require("lazy").setup({
   -- colorscheme
   { "ellisonleao/gruvbox.nvim", priority = 1000 },
 
+-- LaTeX
+{
+  "lervag/vimtex",
+  ft = "tex",
+  config = function()
+    vim.g.vimtex_view_method = "zathura"
+    vim.g.vimtex_compiler_method = "latexmk"
+    vim.g.vimtex_view_forward_search_on_start = 1
+  end,
+},
+
   -- file tree
   {
     "nvim-tree/nvim-tree.lua",

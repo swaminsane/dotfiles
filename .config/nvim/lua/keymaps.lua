@@ -24,3 +24,6 @@ map("n", "<C-k>", "<C-w>k", { desc = "Move up" })
 -- move lines up and down in visual mode
 map("v", "J", ":m '>+1<CR>gv=gv", { desc = "Move line down" })
 map("v", "K", ":m '<-2<CR>gv=gv", { desc = "Move line up" })
+
+-- quick notes
+map("n", "<leader>n", ":e ~/sync/docs/notes/quicknotes.md<CR>", { desc = "Open notes" })
