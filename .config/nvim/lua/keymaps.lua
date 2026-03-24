@@ -27,3 +27,6 @@ map("v", "K", ":m '<-2<CR>gv=gv", { desc = "Move line up" })
 
 -- quick notes
 map("n", "<leader>n", ":e ~/sync/docs/notes/quicknotes.md<CR>", { desc = "Open notes" })
+
+-- Compile and run C
+map("n", "<leader>cc", ":w<CR>:!gcc % -o %:r && ./%:r<CR>", { desc = "Compile and run C" })
