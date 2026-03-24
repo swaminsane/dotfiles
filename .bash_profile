@@ -14,3 +14,4 @@ if [ -z "$DISPLAY" ]; then
             ;;
     esac
 fi
+

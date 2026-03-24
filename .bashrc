@@ -16,6 +16,7 @@ alias f="fz"
 alias nano="nano -l"
 alias soundr="systemctl --user restart pipewire.service"
 alias dots='git --git-dir=$HOME/dotfiles --work-tree=$HOME'
+alias tmux='tmux -f ~/.config/tmux/tmux.conf'
 
 # If not running interactively, don't do anything
 case $- in
@@ -130,4 +131,3 @@ if ! shopt -oq posix; then
 fi
 export PATH="$HOME/.npm-global/bin:$PATH"
 
-export PATH="$HOME/.local/src/nvim-linux-x86_64/bin:$PATH"
