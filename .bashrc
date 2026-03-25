@@ -17,6 +17,7 @@ alias nano="nano -l"
 alias soundr="systemctl --user restart pipewire.service"
 alias dots='git --git-dir=$HOME/dotfiles --work-tree=$HOME'
 alias tmux='tmux -f ~/.config/tmux/tmux.conf'
+alias musicr='systemctl --user restart mpd && mpc update --wait && pkill ncmpcpp 2>/dev/null; ncmpcpp'
 
 # If not running interactively, don't do anything
 case $- in

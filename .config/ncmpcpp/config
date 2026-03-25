@@ -1,0 +1,20 @@
+mpd_host = "127.0.0.1"
+mpd_port = "6600"
+
+playlist_display_mode = "columns"
+autocenter_mode = "yes"
+centered_cursor = "yes"
+
+user_interface = "classic"
+follow_now_playing_lyrics = "yes"
+
+display_bitrate = "yes"
+visualizer_output_name = "my_fifo"
+
+progressbar_look = "━━━"
+progressbar_color = "cyan"
+
+song_columns_list_format = "(20)[cyan]{a} (30)[white]{t} (20)[green]{b}"
+
+execute_on_song_change = "$HOME/.config/ncmpcpp/cover.sh"
+allow_for_physical_item_deletion = "no"
