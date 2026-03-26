@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# textsmenu — browse local book/PDF libraries via dmenu
+# Edit LIBRARIES to add/remove sections and their paths
+
+# ── Libraries (label → path) ──────────────────────────────────────────────────
+declare -A LIBRARIES
+LIBRARIES["NCERT"]="$HOME/sync/docs/ncert"
+LIBRARIES["Books"]="$HOME/books"
+# Add more like:
+# LIBRARIES["Papers"]="$HOME/sync/papers"
+# LIBRARIES["Manga"]="$HOME/sync/manga"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+READER="${TEXTSMENU_READER:-zathura}"   # PDF reader: zathura, mupdf
+LOGFILE="/tmp/textsmenu.log"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+notify() {
+    notify-send -u "${2:-normal}" -t 3000 -i "document-open" "textsmenu" "$1" 2>/dev/null \
+        || echo "[notify] $1" >> "$LOGFILE"
+}
+
+dmenu_pick() {
+    dmenu -i -l 15 -p "$1"
+}
+
+# ── Pick library ──────────────────────────────────────────────────────────────
+section=$(printf '%s\n' "${!LIBRARIES[@]}" | sort | dmenu_pick "Library: ") || exit 0
+[[ -z "$section" ]] && exit 0
+
+dir="${LIBRARIES[$section]}"
+
+if [[ ! -d "$dir" ]]; then
+    notify "Directory not found: $dir" "critical"
+    exit 1
+fi
+
+# ── Find all readable files ───────────────────────────────────────────────────
+# Strips the base dir prefix so only relative path shows in dmenu
+mapfile -t files < <(find "$dir" \
+    \( -name "*.pdf" -o -name "*.epub" -o -name "*.djvu" \
+       -o -name "*.cbz" -o -name "*.cbr" -o -name "*.mobi" \) \
+    | sed "s|^$dir/||" | sort)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+    notify "No files found in: $dir" "low"
+    exit 1
+fi
+
+# ── Pick file ─────────────────────────────────────────────────────────────────
+chosen=$(printf '%s\n' "${files[@]}" | dmenu_pick "$section: ") || exit 0
+[[ -z "$chosen" ]] && exit 0
+
+full_path="$dir/$chosen"
+
+if [[ ! -f "$full_path" ]]; then
+    notify "File not found: $chosen" "critical"
+    exit 1
+fi
+
+# ── Open ──────────────────────────────────────────────────────────────────────
+notify "Opening: $(basename "$chosen")" "low"
+echo "[textsmenu] opening $full_path with $READER" >> "$LOGFILE"
+$READER "$full_path" &

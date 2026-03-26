@@ -1,0 +1,9 @@
+#!/bin/sh
+case "$(echo "Shutdown\nRestart\nLogoff\nSleep\nHibernate\nLock" | dmenu -i -p "Power Menu")" in
+    Shutdown) systemctl poweroff;;
+    Restart) systemctl reboot;;
+    Logoff) pkill dwm;;
+    Sleep)  systemctl suspend;;
+    Hibernate)  systemctl hibernate;;
+    Lock) slock;;
+esac

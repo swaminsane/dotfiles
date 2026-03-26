@@ -1,0 +1,48 @@
+#!/bin/bash
+
+current="$(mpc status | head -n1)"
+
+choice=$(printf "Play/Pause\nNext\nPrevious\nOpen ncmpcpp\nSelect Song\nAdd to Queue\nUpdate Library\nStart MPD\nStop MPD" | dmenu -i -l 10 -p "$current")
+
+case "$choice" in
+    "Play/Pause")
+        mpc toggle
+        ;;
+
+    "Next")
+        mpc next
+        ;;
+
+    "Previous")
+        mpc prev
+        ;;
+
+    "Open ncmpcpp")
+	st -e ncmpcpp
+	;;
+
+    "Select Song")
+        song=$(mpc listall | dmenu -i -l 20 -p "Play song")
+        [ -n "$song" ] && mpc clear && mpc add "$song" && mpc play
+        ;;
+
+    "Add to Queue")
+        song=$(mpc listall | dmenu -i -l 20 -p "Add to queue")
+        [ -n "$song" ] && mpc add "$song"
+        ;;
+
+    "Update Library")
+        mpc update && pkill ncmpcpp 2>/dev/null
+        notify-send "MPD" "Library updating + ncmpcpp restarted"
+        ;;
+
+    "Start MPD")
+        systemctl --user start mpd
+        notify-send "MPD" "MPD started"
+        ;;
+
+    "Stop MPD")
+        systemctl --user stop mpd
+        notify-send "MPD" "MPD stopped"
+        ;;
+esac
