@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ===== CONFIG =====
-DIR="$HOME/.local/src/startpage"
+DIR="$HOME/startpage"
 PORT=8080
 URL="http://localhost:$PORT"
 
