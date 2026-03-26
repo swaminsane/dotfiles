@@ -12,8 +12,6 @@ if [ "$WM" = "dwm" ]; then
     dunst &
     feh --bg-fill --randomize /usr/share/backgrounds/
     nm-applet &
-    /usr/bin/kdeconnectd &   
-   
- 
+    /usr/bin/kdeconnectd &
 
 fi

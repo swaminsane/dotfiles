@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+# ===== CONFIG =====
+DIR="$HOME/.local/src/startpage"
+PORT=8080
+URL="http://localhost:$PORT"
+
+# ===== START SERVER (if not already running) =====
+if ! pgrep -f "server.py" > /dev/null; then
+    cd "$DIR" || exit
+    python3 server.py &
+    sleep 0.5
+fi
+
+# ===== OPEN IN SURF =====
+surf "$URL" &
