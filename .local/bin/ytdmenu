@@ -1,0 +1,701 @@
+#!/usr/bin/env bash
+# ytdmenu v4 — YouTube explorer via dmenu → mpv
+# Dependencies: yt-dlp, dmenu, mpv, libnotify (notify-send)
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ytdmenu"
+CONFIG_FILE="$CONFIG_DIR/config"
+HISTORY_FILE="$CONFIG_DIR/history"
+SUBS_FILE="$CONFIG_DIR/subscriptions"
+QUEUE_FILE="$CONFIG_DIR/queue"
+LOGFILE="/tmp/ytdmenu.log"
+mkdir -p "$CONFIG_DIR"
+touch "$SUBS_FILE" "$QUEUE_FILE" "$HISTORY_FILE"
+
+# ── Default config ─────────────────────────────────────────────────────────────
+if [[ ! -f "$CONFIG_FILE" ]]; then
+cat > "$CONFIG_FILE" << 'CONF'
+QUALITY=720
+RESULTS=20
+DOWNLOAD_DIR=$HOME/Downloads
+MPV_EXTRA=--really-quiet
+CONF
+fi
+source "$CONFIG_FILE"
+DOWNLOAD_DIR="${DOWNLOAD_DIR/#\~/$HOME}"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+notify() {
+    # notify "message" [urgency: low|normal|critical]
+    notify-send -u "${2:-normal}" -t 4000 -i "mpv" "ytdmenu" "$1" 2>/dev/null \
+        || echo "[notify] $1" >> "$LOGFILE"
+}
+
+dmenu_pick() {
+    dmenu -i -l 15 -p "$1"
+}
+
+update_config() {
+    local key="$1" val="$2"
+    if grep -q "^${key}=" "$CONFIG_FILE"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$CONFIG_FILE"
+    else
+        echo "${key}=${val}" >> "$CONFIG_FILE"
+    fi
+}
+
+save_history() {
+    local title="$1" url="$2"
+    tmp=$(mktemp)
+    echo "${title}	${url}" > "$tmp"
+    grep -vF "$url" "$HISTORY_FILE" 2>/dev/null | head -99 >> "$tmp"
+    mv "$tmp" "$HISTORY_FILE"
+}
+
+quality_flag() {
+    case "$QUALITY" in
+        best)   echo "bestvideo+bestaudio/best" ;;
+        1080)   echo "bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
+        720)    echo "bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+        480)    echo "bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
+        360)    echo "bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
+        audio)  echo "bestaudio/best" ;;
+        *)      echo "bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+    esac
+}
+
+shorten() { echo "$1" | cut -c1-"${2:-55}"; }
+
+# ── Action menu ───────────────────────────────────────────────────────────────
+action_menu() {
+    local url="$1" title="$2"
+    local short; short=$(shorten "$title")
+
+    local action
+    action=$(printf 'Play\nAdd to Queue\nDownload\nCopy URL' \
+        | dmenu_pick "[$short]: ") || return
+
+    case "$action" in
+        Play)           do_play "$url" "$title" ;;
+        "Add to Queue") queue_add "$url" "$title" ;;
+        Download)       do_download "$url" "$title" ;;
+        "Copy URL")
+            echo -n "$url" | xclip -selection clipboard 2>/dev/null \
+                || echo -n "$url" | xsel --clipboard --input 2>/dev/null
+            notify "URL copied to clipboard"
+            ;;
+    esac
+}
+
+# ── Play ──────────────────────────────────────────────────────────────────────
+do_play() {
+    local url="$1" title="$2"
+    local fmt; fmt=$(quality_flag)
+    notify "▶ Playing [$QUALITY]: $(shorten "$title")" "normal"
+    save_history "$title" "$url"
+    echo "[ytdmenu] playing $url (fmt: $fmt)" >> "$LOGFILE"
+    mpv $MPV_EXTRA --ytdl-format="$fmt" "$url" &
+}
+
+# ── Download ──────────────────────────────────────────────────────────────────
+do_download() {
+    local url="$1" title="$2"
+    local short; short=$(shorten "$title")
+
+    local dl_q
+    dl_q=$(printf 'best\n1080p\n720p\n480p\n360p\naudio only' \
+        | dmenu_pick "Download quality: ") || return
+
+    local fmt
+    case "$dl_q" in
+        best)         fmt="bestvideo+bestaudio/best" ;;
+        1080p)        fmt="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
+        720p)         fmt="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+        480p)         fmt="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
+        360p)         fmt="bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
+        "audio only") fmt="bestaudio/best" ;;
+        *)            return ;;
+    esac
+
+    notify "⬇ Downloading [$dl_q]: $short" "low"
+    (
+        yt-dlp -f "$fmt" \
+            --newline \
+            -o "${DOWNLOAD_DIR}/%(title)s.%(ext)s" \
+            "$url" >> "$LOGFILE" 2>&1 \
+            && notify "✔ Done: $short" "normal" \
+            || notify "✘ Failed: $short — check $LOGFILE" "critical"
+    ) &
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SEARCH
+# ═══════════════════════════════════════════════════════════════════════════════
+do_search() {
+    # Suggestion list from watch history titles
+    local suggestions
+    suggestions=$(awk -F'\t' '{print $1}' "$HISTORY_FILE" 2>/dev/null | head -30)
+
+    local query
+    query=$(echo "$suggestions" | dmenu -i -l 10 -p "Search / URL: ") || return
+    [[ -z "$query" ]] && return
+
+    # ── If it looks like a URL, treat as playlist/video URL ───────────────────
+    if [[ "$query" == http* ]]; then
+        # Single video URL (no playlist param) → straight to action menu
+        if [[ "$query" =~ youtu\.be/ ]] || \
+           ( [[ "$query" =~ watch\?v= ]] && [[ ! "$query" =~ list= ]] ); then
+            notify "🔗 Fetching video info…" "low"
+            local raw
+            raw=$(yt-dlp \
+                --no-warnings \
+                --no-playlist \
+                --ignore-errors \
+                --print "%(webpage_url)s	%(title)s	%(duration_string)s	%(uploader)s" \
+                "$query" 2>>"$LOGFILE")
+            [[ -z "$raw" ]] && { notify "Could not fetch URL" "critical"; return; }
+            pick_from_raw "$raw"
+        else
+            # Playlist, channel, or ambiguous URL → full playlist handler
+            _playlist_from_url "$query"
+        fi
+        return
+    fi
+
+    # ── Normal keyword search ─────────────────────────────────────────────────
+    notify "🔍 Searching: $(shorten "$query" 40)" "low"
+
+    local raw
+    raw=$(yt-dlp \
+        --no-warnings \
+        --flat-playlist \
+        --no-playlist \
+        --ignore-errors \
+        --print "%(webpage_url)s	%(title)s	%(duration_string)s	%(uploader)s" \
+        "ytsearch${RESULTS}:${query}" 2>>"$LOGFILE")
+
+    [[ -z "$raw" ]] && { notify "No results for: $query" "critical"; return; }
+
+    pick_from_raw "$raw"
+}
+
+pick_from_raw() {
+    local raw="$1"
+    declare -a labels urls
+
+    while IFS=$'\t' read -r url title dur uploader; do
+        [[ -z "$url" || -z "$title" ]] && continue
+        local dur_part chan_part
+        dur_part=$([ -n "$dur" ] && echo "[$dur] ")
+        chan_part=$([ -n "$uploader" ] && echo " — $uploader")
+        labels+=("${dur_part}${title}${chan_part}")
+        urls+=("$url")
+    done <<< "$raw"
+
+    [[ ${#labels[@]} -eq 0 ]] && { notify "No results parsed — check $LOGFILE" "critical"; return; }
+
+    # Multi-select loop: keep picking until user cancels
+    while true; do
+        local chosen
+        chosen=$(printf '%s\n' "${labels[@]}" | dmenu_pick "▶ Pick (Esc=done): ") || break
+        [[ -z "$chosen" ]] && break
+
+        local vurl="" vtitle=""
+        for i in "${!labels[@]}"; do
+            if [[ "${labels[$i]}" == "$chosen" ]]; then
+                vurl="${urls[$i]}"
+                vtitle="${labels[$i]}"
+                break
+            fi
+        done
+        [[ -z "$vurl" ]] && break
+
+        action_menu "$vurl" "$vtitle"
+        break   # single pick → action menu → done (remove this line for multi-add-to-queue loop)
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PLAYLIST SUPPORT  (called automatically when a URL is pasted into Search)
+# ═══════════════════════════════════════════════════════════════════════════════
+_playlist_from_url() {
+    local url="$1"
+
+    notify "📋 Fetching playlist…" "low"
+
+    raw=$(yt-dlp \
+        --no-warnings \
+        --flat-playlist \
+        --ignore-errors \
+        --print "%(webpage_url)s	%(title)s	%(duration_string)s	%(uploader)s" \
+        "$url" 2>>"$LOGFILE")
+
+    [[ -z "$raw" ]] && { notify "Could not fetch playlist" "critical"; return; }
+
+    local count; count=$(echo "$raw" | wc -l)
+    notify "📋 Loaded $count videos" "normal"
+
+    local mode
+    mode=$(printf 'Browse & pick\nPlay all\nAdd all to queue\nDownload all' \
+        | dmenu_pick "Playlist ($count videos): ") || return
+
+    case "$mode" in
+        "Browse & pick")
+            pick_from_raw "$raw"
+            ;;
+        "Play all")
+            local fmt; fmt=$(quality_flag)
+            local playlist_file; playlist_file=$(mktemp /tmp/ytdmenu-playlist-XXXX.txt)
+            awk -F'\t' '{print $1}' <<< "$raw" > "$playlist_file"
+            notify "▶ Playing all $count videos [$QUALITY]" "normal"
+            mpv $MPV_EXTRA --ytdl-format="$fmt" \
+                --playlist="$playlist_file" &
+            ;;
+        "Add all to queue")
+            local added=0
+            while IFS=$'\t' read -r vurl vtitle _ _; do
+                [[ -z "$vurl" ]] && continue
+                echo "${vtitle}	${vurl}" >> "$QUEUE_FILE"
+                (( added++ ))
+            done <<< "$raw"
+            notify "➕ Added $added videos to queue" "normal"
+            ;;
+        "Download all")
+            local dl_q
+            dl_q=$(printf 'best\n1080p\n720p\n480p\n360p\naudio only' \
+                | dmenu_pick "Download quality: ") || return
+            local fmt
+            case "$dl_q" in
+                best)         fmt="bestvideo+bestaudio/best" ;;
+                1080p)        fmt="bestvideo[height<=1080]+bestaudio/best[height<=1080]" ;;
+                720p)         fmt="bestvideo[height<=720]+bestaudio/best[height<=720]" ;;
+                480p)         fmt="bestvideo[height<=480]+bestaudio/best[height<=480]" ;;
+                360p)         fmt="bestvideo[height<=360]+bestaudio/best[height<=360]" ;;
+                "audio only") fmt="bestaudio/best" ;;
+                *)            return ;;
+            esac
+            notify "⬇ Downloading $count videos in background…" "low"
+            (
+                yt-dlp -f "$fmt" \
+                    --newline \
+                    -o "${DOWNLOAD_DIR}/%(playlist_title)s/%(title)s.%(ext)s" \
+                    "$url" >> "$LOGFILE" 2>&1 \
+                    && notify "✔ Playlist download complete" "normal" \
+                    || notify "✘ Playlist download failed — check $LOGFILE" "critical"
+            ) &
+            ;;
+    esac
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  QUEUE
+# ═══════════════════════════════════════════════════════════════════════════════
+queue_add() {
+    local url="$1" title="$2"
+    echo "${title}	${url}" >> "$QUEUE_FILE"
+    local count; count=$(wc -l < "$QUEUE_FILE")
+    notify "➕ Queued: $(shorten "$title" 40)  [$count in queue]" "normal"
+}
+
+do_queue() {
+    if [[ ! -s "$QUEUE_FILE" ]]; then
+        notify "Queue is empty" "low"
+        return
+    fi
+
+    local count; count=$(wc -l < "$QUEUE_FILE")
+
+    local action
+    action=$(printf "Play all ($count videos)\nBrowse & manage\nClear queue" \
+        | dmenu_pick "Queue [$count]: ") || return
+
+    case "$action" in
+        "Play all"*)
+            local fmt; fmt=$(quality_flag)
+            local playlist_file; playlist_file=$(mktemp /tmp/ytdmenu-queue-XXXX.txt)
+            awk -F'\t' '{print $2}' "$QUEUE_FILE" > "$playlist_file"
+            notify "▶ Playing queue: $count videos [$QUALITY]" "normal"
+            mpv $MPV_EXTRA --ytdl-format="$fmt" \
+                --playlist="$playlist_file" &
+            ;;
+        "Browse & manage")
+            queue_browse
+            ;;
+        "Clear queue")
+            > "$QUEUE_FILE"
+            notify "Queue cleared" "low"
+            ;;
+    esac
+}
+
+queue_browse() {
+    while true; do
+        [[ ! -s "$QUEUE_FILE" ]] && { notify "Queue is empty" "low"; return; }
+
+        declare -a qlabels qurls
+        local i=1
+        while IFS=$'\t' read -r title url; do
+            [[ -z "$url" ]] && continue
+            qlabels+=("$i. $title")
+            qurls+=("$url")
+            (( i++ ))
+        done < "$QUEUE_FILE"
+
+        local chosen
+        chosen=$(printf '%s\n' "${qlabels[@]}" | dmenu_pick "Queue (pick to remove/play): ") || return
+        [[ -z "$chosen" ]] && return
+
+        local idx="" vurl="" vtitle=""
+        for j in "${!qlabels[@]}"; do
+            if [[ "${qlabels[$j]}" == "$chosen" ]]; then
+                idx=$j
+                vurl="${qurls[$j]}"
+                vtitle="${qlabels[$j]}"
+                break
+            fi
+        done
+        [[ -z "$vurl" ]] && return
+
+        local act
+        act=$(printf 'Play now\nRemove from queue\nMove to top' \
+            | dmenu_pick "$(shorten "$vtitle" 40): ") || return
+
+        case "$act" in
+            "Play now")
+                do_play "$vurl" "$vtitle"
+                ;;
+            "Remove from queue")
+                # Remove line by index (1-based)
+                local lineno=$(( idx + 1 ))
+                sed -i "${lineno}d" "$QUEUE_FILE"
+                notify "Removed from queue" "low"
+                ;;
+            "Move to top")
+                local lineno=$(( idx + 1 ))
+                local line; line=$(sed -n "${lineno}p" "$QUEUE_FILE")
+                sed -i "${lineno}d" "$QUEUE_FILE"
+                tmp=$(mktemp)
+                echo "$line" > "$tmp"
+                cat "$QUEUE_FILE" >> "$tmp"
+                mv "$tmp" "$QUEUE_FILE"
+                notify "Moved to top of queue" "low"
+                ;;
+        esac
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SUBSCRIPTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+do_subscriptions() {
+    local action
+    action=$(printf 'Browse latest\nAdd channel\nRemove channel\nFetch all (refresh)' \
+        | dmenu_pick "Subscriptions: ") || return
+
+    case "$action" in
+        "Browse latest")   subs_browse ;;
+        "Add channel")     subs_add ;;
+        "Remove channel")  subs_remove ;;
+        "Fetch all (refresh)") subs_fetch_all ;;
+    esac
+}
+
+subs_add() {
+    local input
+    input=$(printf '' | dmenu -p "Channel URL or name: ") || return
+    [[ -z "$input" ]] && return
+
+    # If it looks like a URL, use directly; otherwise search for it
+    if [[ "$input" == http* ]]; then
+        local name
+        name=$(printf '' | dmenu -p "Nickname for this channel: ") || return
+        [[ -z "$name" ]] && name="$input"
+        echo "${name}	${input}" >> "$SUBS_FILE"
+        notify "✔ Subscribed to: $name" "normal"
+    else
+        # Search for channel
+        notify "🔍 Searching channel: $input" "low"
+        local raw
+        raw=$(yt-dlp \
+            --no-warnings \
+            --flat-playlist \
+            --ignore-errors \
+            --print "%(channel_url)s	%(channel)s" \
+            "ytsearch5:$input" 2>>"$LOGFILE" \
+            | sort -u -t$'\t' -k2,2 \
+            | head -10)
+
+        [[ -z "$raw" ]] && { notify "Could not find channel" "critical"; return; }
+
+        declare -a clabels curls
+        while IFS=$'\t' read -r curl cname; do
+            [[ -z "$curl" || "$curl" == "NA" ]] && continue
+            clabels+=("$cname")
+            curls+=("$curl")
+        done <<< "$raw"
+
+        [[ ${#clabels[@]} -eq 0 ]] && { notify "No channel results" "critical"; return; }
+
+        local chosen
+        chosen=$(printf '%s\n' "${clabels[@]}" | dmenu_pick "Pick channel: ") || return
+        [[ -z "$chosen" ]] && return
+
+        local curl=""
+        for i in "${!clabels[@]}"; do
+            [[ "${clabels[$i]}" == "$chosen" ]] && { curl="${curls[$i]}"; break; }
+        done
+        [[ -z "$curl" ]] && return
+
+        # Check for duplicate
+        if grep -qF "$curl" "$SUBS_FILE"; then
+            notify "Already subscribed to $chosen" "low"
+            return
+        fi
+
+        echo "${chosen}	${curl}" >> "$SUBS_FILE"
+        notify "✔ Subscribed to: $chosen" "normal"
+    fi
+}
+
+subs_remove() {
+    [[ ! -s "$SUBS_FILE" ]] && { notify "No subscriptions" "low"; return; }
+
+    declare -a snames surls
+    while IFS=$'\t' read -r name url; do
+        [[ -z "$url" ]] && continue
+        snames+=("$name")
+        surls+=("$url")
+    done < "$SUBS_FILE"
+
+    local chosen
+    chosen=$(printf '%s\n' "${snames[@]}" | dmenu_pick "Remove channel: ") || return
+    [[ -z "$chosen" ]] && return
+
+    grep -vF "$chosen" "$SUBS_FILE" > /tmp/ytdmenu-subs.tmp
+    mv /tmp/ytdmenu-subs.tmp "$SUBS_FILE"
+    notify "Unsubscribed from: $chosen" "low"
+}
+
+subs_browse() {
+    [[ ! -s "$SUBS_FILE" ]] && { notify "No subscriptions yet — add a channel first" "low"; return; }
+
+    declare -a snames surls
+    while IFS=$'\t' read -r name url; do
+        [[ -z "$url" ]] && continue
+        snames+=("$name")
+        surls+=("$url")
+    done < "$SUBS_FILE"
+
+    local chosen
+    chosen=$(printf '%s\n' "${snames[@]}" | dmenu_pick "Pick channel: ") || return
+    [[ -z "$chosen" ]] && return
+
+    local curl=""
+    for i in "${!snames[@]}"; do
+        [[ "${snames[$i]}" == "$chosen" ]] && { curl="${surls[$i]}"; break; }
+    done
+    [[ -z "$curl" ]] && return
+
+    notify "📡 Fetching latest from: $chosen" "low"
+
+    local raw
+    raw=$(yt-dlp \
+        --no-warnings \
+        --flat-playlist \
+        --ignore-errors \
+        --playlist-end 30 \
+        --print "%(webpage_url)s	%(title)s	%(duration_string)s	%(uploader)s" \
+        "$curl" 2>>"$LOGFILE")
+
+    [[ -z "$raw" ]] && { notify "No videos found for $chosen" "critical"; return; }
+
+    local count; count=$(echo "$raw" | wc -l)
+    notify "📡 $chosen — $count latest videos" "normal"
+    pick_from_raw "$raw"
+}
+
+subs_fetch_all() {
+    [[ ! -s "$SUBS_FILE" ]] && { notify "No subscriptions" "low"; return; }
+
+    local total=0
+    local all_raw=""
+
+    while IFS=$'\t' read -r name url; do
+        [[ -z "$url" ]] && continue
+        notify "📡 Fetching: $name" "low"
+        local raw
+        raw=$(yt-dlp \
+            --no-warnings \
+            --flat-playlist \
+            --ignore-errors \
+            --playlist-end 10 \
+            --print "%(webpage_url)s	%(title)s	%(duration_string)s	%(uploader)s" \
+            "$url" 2>>"$LOGFILE")
+        [[ -n "$raw" ]] && all_raw+="$raw"$'\n'
+        local c; c=$(echo "$raw" | grep -c '^http')
+        total=$(( total + c ))
+    done < "$SUBS_FILE"
+
+    [[ -z "$all_raw" ]] && { notify "Nothing fetched" "critical"; return; }
+
+    notify "📡 Fetched $total videos from all channels" "normal"
+    pick_from_raw "$all_raw"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RECENTLY DOWNLOADED
+# ═══════════════════════════════════════════════════════════════════════════════
+do_recent_downloads() {
+    local dir="${DOWNLOAD_DIR/#\~/$HOME}"
+    if [[ ! -d "$dir" ]]; then
+        notify "Download dir not found: $dir" "critical"
+        return
+    fi
+
+    # List video/audio files sorted by newest first
+    declare -a files
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(find "$dir" -maxdepth 2 \
+        \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \
+           -o -name "*.mp3" -o -name "*.opus" -o -name "*.m4a" \) \
+        -printf "%T@ %f\n" 2>/dev/null \
+        | sort -rn | head -50 | awk '{$1=""; print substr($0,2)}')
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        notify "No downloaded files found in $dir" "low"
+        return
+    fi
+
+    local chosen
+    chosen=$(printf '%s\n' "${files[@]}" | dmenu_pick "Recent downloads: ") || return
+    [[ -z "$chosen" ]] && return
+
+    # Find full path
+    local full_path
+    full_path=$(find "$dir" -maxdepth 2 -name "$chosen" | head -1)
+    [[ -z "$full_path" ]] && return
+
+    local act
+    act=$(printf 'Play\nOpen folder\nDelete' \
+        | dmenu_pick "$(shorten "$chosen"): ") || return
+
+    case "$act" in
+        Play)
+            notify "▶ Playing: $(shorten "$chosen")" "normal"
+            mpv $MPV_EXTRA "$full_path" &
+            ;;
+        "Open folder")
+            local folder; folder=$(dirname "$full_path")
+            xdg-open "$folder" 2>/dev/null &
+            ;;
+        Delete)
+            local confirm
+            confirm=$(printf 'No\nYes' | dmenu_pick "Delete $chosen?") || return
+            [[ "$confirm" == "Yes" ]] && {
+                rm "$full_path"
+                notify "🗑 Deleted: $(shorten "$chosen")" "low"
+            }
+            ;;
+    esac
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  HISTORY
+# ═══════════════════════════════════════════════════════════════════════════════
+do_history() {
+    if [[ ! -s "$HISTORY_FILE" ]]; then
+        notify "History is empty" "low"
+        return
+    fi
+
+    declare -a hlabels hurls
+    while IFS=$'\t' read -r title url; do
+        [[ -z "$url" ]] && continue
+        hlabels+=("$title")
+        hurls+=("$url")
+    done < "$HISTORY_FILE"
+
+    local chosen
+    chosen=$(printf '%s\n' "${hlabels[@]}" | dmenu_pick "History ▶ ") || return
+    [[ -z "$chosen" ]] && return
+
+    local url=""
+    for i in "${!hlabels[@]}"; do
+        if [[ "${hlabels[$i]}" == "$chosen" ]]; then
+            url="${hurls[$i]}"
+            break
+        fi
+    done
+    [[ -z "$url" ]] && return
+
+    action_menu "$url" "$chosen"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SETTINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+do_settings() {
+    local opt
+    opt=$(printf "Quality        (now: $QUALITY)\nResults        (now: $RESULTS)\nDownload Dir   (now: $DOWNLOAD_DIR)\nMPV Extra Args (now: $MPV_EXTRA)\nClear History\nClear Queue" \
+        | dmenu_pick "⚙ Settings: ") || return
+
+    case "$opt" in
+        Quality*)
+            local v; v=$(printf 'best\n1080\n720\n480\n360\naudio' | dmenu_pick "Default quality: ") || return
+            [[ -n "$v" ]] && { QUALITY="$v"; update_config QUALITY "$v"; notify "Quality → $v"; }
+            ;;
+        Results*)
+            local v; v=$(printf '10\n15\n20\n30\n50' | dmenu_pick "Max results: ") || return
+            [[ -n "$v" ]] && { RESULTS="$v"; update_config RESULTS "$v"; notify "Results → $v"; }
+            ;;
+        "Download Dir"*)
+            local v; v=$(printf '' | dmenu -p "Download dir: ") || return
+            v="${v/#\~/$HOME}"
+            [[ -n "$v" ]] && { mkdir -p "$v"; DOWNLOAD_DIR="$v"; update_config DOWNLOAD_DIR "$v"; notify "Download dir → $v"; }
+            ;;
+        "MPV Extra Args"*)
+            local v; v=$(printf '' | dmenu -p "mpv extra flags: ") || return
+            MPV_EXTRA="$v"
+            update_config MPV_EXTRA "$v"
+            notify "MPV args → $v"
+            ;;
+        "Clear History")
+            > "$HISTORY_FILE"
+            notify "History cleared" "low"
+            ;;
+        "Clear Queue")
+            > "$QUEUE_FILE"
+            notify "Queue cleared" "low"
+            ;;
+    esac
+
+    do_settings
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN MENU
+# ═══════════════════════════════════════════════════════════════════════════════
+queue_count() { wc -l < "$QUEUE_FILE" 2>/dev/null | tr -d ' '; }
+subs_count()  { wc -l < "$SUBS_FILE"  2>/dev/null | tr -d ' '; }
+
+main_menu() {
+    local qc; qc=$(queue_count)
+    local sc; sc=$(subs_count)
+
+    local choice
+    choice=$(printf "Search\nSubscriptions  [$sc channels]\nQueue          [$qc videos]\nHistory\nRecently Downloaded\nSettings" \
+        | dmenu_pick "YouTube  [q:${QUALITY}]: ") || exit 0
+
+    case "$choice" in
+        Search)                do_search ;;
+        Subscriptions*)        do_subscriptions ;;
+        Queue*)                do_queue ;;
+        History)               do_history ;;
+        "Recently Downloaded") do_recent_downloads ;;
+        Settings)              do_settings ;;
+        *)                     exit 0 ;;
+    esac
+}
+
+main_menu
