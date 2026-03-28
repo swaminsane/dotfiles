@@ -29,6 +29,21 @@ require("lazy").setup({
       })
       vim.lsp.enable("clangd")
 
+-- Python LSP
+vim.lsp.config("pyright", {
+  capabilities = capabilities,
+  settings = {
+    python = {
+      analysis = {
+        autoImportCompletions = true,
+        typeCheckingMode = "basic",
+        diagnosticMode = "workspace",
+      },
+    },
+  },
+})
+vim.lsp.enable("pyright")
+
       -- LSP keymaps attach whenever any LSP connects
       vim.api.nvim_create_autocmd("LspAttach", {
         callback = function(event)
@@ -50,6 +65,7 @@ require("lazy").setup({
       })
     end,
   },
+
 
   -- ── Autocompletion ─────────────────────────────────────────────────────
   {
@@ -94,6 +110,7 @@ require("lazy").setup({
         formatters_by_ft = {
           c   = { "clang_format" },
           cpp = { "clang_format" },
+          python = { "black" },   
         },
         format_on_save = {
           timeout_ms   = 500,

@@ -33,3 +33,6 @@ map("n", "<leader>cc", ":w<CR>:!bear -- gcc % -o %:r && ./%:r<CR>", { desc = "Co
 
 map("n", "<leader>cw", ":w<CR>:!gcc -Wall -Wextra -g % -o %:r && ./%:r<CR>",
   { desc = "Compile C with warnings" })
+
+-- Run Python
+map("n", "<leader>cp", ":w<CR>:belowright split | resize 15 | term python3 %<CR>i", { desc = "Run Python" })
