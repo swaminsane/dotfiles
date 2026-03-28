@@ -1,0 +1,640 @@
+#!/usr/bin/env bash
+# ══════════════════════════════════════════════════════════════════════════════
+#  newsboat-dmenu  ·  A feature-rich dmenu front-end for newsboat
+#  Author: auto-generated
+#
+#  Hard dependencies : dmenu, newsboat, notify-send, sqlite3
+#  Soft dependencies : xclip or xsel (clipboard paste in "Add Feed")
+#                      zenity or kdialog (GUI file-picker for OPML)
+#
+#  Installation:
+#    chmod +x newsboat-dmenu.sh
+#    # Bind it to a key in your WM/compositor
+#    # e.g. in sxhkd:  super + n   →   ~/scripts/newsboat-dmenu.sh
+# ══════════════════════════════════════════════════════════════════════════════
+
+set -uo pipefail
+
+# ── User-configurable settings ─────────────────────────────────────────────────
+NB_DIR="${NEWSBOAT_HOME:-$HOME/.newsboat}"
+URLS_FILE="$NB_DIR/urls"
+CACHE_DB="$NB_DIR/cache.db"
+TERM_EMU="${TERMINAL:-st}"           # Your terminal: st, alacritty, kitty, xterm…
+DM_LINES=20                          # Max visible lines in dmenu
+DM_FONT=""                           # e.g. "JetBrains Mono:size=11"  (blank = dmenu default)
+
+# ── Notification helper ────────────────────────────────────────────────────────
+# Wrapper around notify-send so every notification carries "Newsboat" as the app name.
+# Urgency levels: low | normal | critical
+notif() {
+    local title="$1" body="${2:-}" urgency="${3:-normal}"
+    notify-send -a "Newsboat" -u "$urgency" -i "application-rss+xml" "$title" "$body" 2>/dev/null || true
+}
+notif_ok()   { notif "✔  $1" "${2:-}" "normal";   }
+notif_info() { notif "ℹ  $1" "${2:-}" "low";      }
+notif_warn() { notif "⚠  $1" "${2:-}" "normal";   }
+notif_err()  { notif "✗  $1" "${2:-}" "critical"; }
+
+# Show a persistent notification (stays until dismissed) – used for long ops.
+notif_persistent() {
+    notify-send -a "Newsboat" -u normal -t 0 -i "application-rss+xml" "$1" "${2:-}" 2>/dev/null || true
+}
+
+# ── dmenu wrapper ──────────────────────────────────────────────────────────────
+dm() {
+    local prompt="$1"; shift
+    local args=(-l "$DM_LINES" -i -p "$prompt")
+    [[ -n "$DM_FONT" ]] && args+=(-fn "$DM_FONT")
+    # Uncomment and adjust for your colorscheme:
+    # args+=(-nb "#1e1e2e" -nf "#cdd6f4" -sb "#89b4fa" -sf "#1e1e2e")
+    dmenu "${args[@]}" "$@"
+}
+
+# ── Sanity check ───────────────────────────────────────────────────────────────
+ensure_deps() {
+    local missing=()
+    for cmd in dmenu newsboat notify-send sqlite3; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+    if [[ "${#missing[@]}" -gt 0 ]]; then
+        echo "newsboat-dmenu: missing dependencies: ${missing[*]}" >&2
+        notify-send -u critical "newsboat-dmenu" "Missing: ${missing[*]}" 2>/dev/null || true
+        exit 1
+    fi
+}
+
+ensure_urls() {
+    [[ -f "$URLS_FILE" ]] || {
+        notif_err "urls file not found" "$URLS_FILE"
+        exit 1
+    }
+}
+
+# ── URL-file parser ────────────────────────────────────────────────────────────
+# newsboat url-file line format:
+#   <url>  ["~Custom Title"]  [tag1 tag2 ...]   (any order after the url)
+#
+# list_feeds  → prints "display_name|url" per non-comment, non-query line
+list_feeds() {
+    ensure_urls
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*$  ]] && continue
+        [[ "$line" =~ ^#              ]] && continue
+        [[ "$line" =~ ^\"query:       ]] && continue
+        local url
+        url=$(awk '{print $1}' <<< "$line")
+        # Extract custom title: quoted "~Title" or bare ~Title
+        local custom=""
+        custom=$(echo "$line" | grep -oP '"~\K[^"]+' 2>/dev/null | head -1 || true)
+        [[ -z "$custom" ]] && custom=$(echo "$line" | grep -oP '(?<=~)\S+' 2>/dev/null | head -1 || true)
+        echo "${custom:-$url}|$url"
+    done < "$URLS_FILE"
+}
+
+# list_tags  → unique sorted tags
+list_tags() {
+    ensure_urls
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^# || "$line" =~ ^'"query:' ]] && continue
+        # Tokens after url that aren't a quoted title (~…)
+        awk '{for(i=2;i<=NF;i++){t=$i; gsub(/"/,"",t); if(t !~ /^~/ && t != "") print t}}' <<< "$line"
+    done < "$URLS_FILE" | sort -u | grep -v '^$'
+}
+
+# feeds_by_tag TAG  → "display_name|url" lines for that tag
+feeds_by_tag() {
+    local tag="$1"
+    ensure_urls
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^# || "$line" =~ ^'"query:' ]] && continue
+        # word-boundary match for the tag
+        if grep -qwF -- "$tag" <<< "$line"; then
+            local url custom=""
+            url=$(awk '{print $1}' <<< "$line")
+            custom=$(echo "$line" | grep -oP '"~\K[^"]+' 2>/dev/null | head -1 || true)
+            [[ -z "$custom" ]] && custom=$(echo "$line" | grep -oP '(?<=~)\S+' 2>/dev/null | head -1 || true)
+            echo "${custom:-$url}|$url"
+        fi
+    done < "$URLS_FILE"
+}
+
+# ── SQLite unread counters ─────────────────────────────────────────────────────
+unread_for_url() {
+    [[ -f "$CACHE_DB" ]] || { echo 0; return; }
+    # Sanitise single quotes to avoid injection
+    local url="${1//\'/\'\'}"
+    sqlite3 "$CACHE_DB" \
+        "SELECT COUNT(*) FROM rss_item WHERE rssurl='${url}' AND unread=1;" 2>/dev/null || echo 0
+}
+
+unread_total() {
+    [[ -f "$CACHE_DB" ]] || { echo 0; return; }
+    sqlite3 "$CACHE_DB" "SELECT COUNT(*) FROM rss_item WHERE unread=1;" 2>/dev/null || echo 0
+}
+
+# Unread count for every feed in a tag (sum)
+unread_for_tag() {
+    local tag="$1" total=0 count
+    while IFS='|' read -r _ url; do
+        count=$(unread_for_url "$url")
+        (( total += count ))
+    done < <(feeds_by_tag "$tag")
+    echo "$total"
+}
+
+# ── Launch newsboat ────────────────────────────────────────────────────────────
+# Always open with -q (don't auto-refresh) and the original cache DB.
+
+open_nb_all() {
+    $TERM_EMU -e newsboat -q -c "$CACHE_DB" &
+}
+
+# Open with a filtered URLs file (shows only chosen feeds, but preserves cache)
+open_nb_urls() {
+    # args: url [url …]
+    local tmp
+    tmp=$(mktemp /tmp/nb_dmenu_XXXXXX.urls)
+    printf '%s\n' "$@" > "$tmp"
+    # Wrap in bash so we can delete the temp file after newsboat exits
+    $TERM_EMU -e bash -c "newsboat -q -u '$tmp' -c '$CACHE_DB'; rm -f '$tmp'" &
+}
+
+# ── Menu: Browse Feeds ─────────────────────────────────────────────────────────
+menu_browse() {
+    local total
+    total=$(unread_total)
+
+    # Build displayed list: "All Feeds" + one line per feed with unread badge
+    local lines=()
+    lines+=("  All Feeds$(  [[ $total -gt 0 ]] && echo "  ($total unread)")")
+
+    local names=() urls=()
+    while IFS='|' read -r name url; do
+        local cnt
+        cnt=$(unread_for_url "$url")
+        local badge=""
+        [[ "$cnt" -gt 0 ]] && badge="  ($cnt unread)"
+        lines+=("${name}${badge}")
+        names+=("$name")
+        urls+=("$url")
+    done < <(list_feeds)
+
+    local choice
+    choice=$(printf '%s\n' "${lines[@]}" | dm "Browse >") || return 0
+    [[ -z "$choice" ]] && return 0
+
+    if [[ "$choice" == *"All Feeds"* ]]; then
+        notif_ok "Opening Newsboat" "Showing all feeds"
+        open_nb_all
+        return
+    fi
+
+    # Strip the unread badge to recover the display name
+    local name_only
+    name_only=$(sed 's/[[:space:]]*([0-9]* unread)$//' <<< "$choice")
+    name_only="${name_only#"  "}"   # strip leading icon padding
+
+    # Lookup URL
+    local url=""
+    for i in "${!names[@]}"; do
+        [[ "${names[$i]}" == "$name_only" ]] && { url="${urls[$i]}"; break; }
+    done
+
+    if [[ -n "$url" ]]; then
+        notif_ok "Opening feed" "$name_only"
+        open_nb_urls "$url"
+    else
+        notif_warn "Feed not found" "$name_only"
+    fi
+}
+
+# ── Menu: Add Feed ─────────────────────────────────────────────────────────────
+menu_add_feed() {
+    # Pre-fill URL from clipboard if it looks like a feed URL
+    local clip=""
+    clip=$(xclip -selection clipboard -o 2>/dev/null \
+        || xsel --clipboard --output 2>/dev/null \
+        || true)
+    [[ "$clip" =~ ^https?:// ]] || clip=""
+
+    local url
+    url=$(echo "${clip}" | dm "Feed URL (paste or type) >") || return 0
+    url="${url// /}"     # strip whitespace
+    [[ -z "$url" ]] && return 0
+
+    if [[ ! "$url" =~ ^https?:// ]]; then
+        notif_err "Invalid URL" "Must start with http:// or https://"
+        return
+    fi
+
+    # Check for duplicates
+    if grep -qF "$url" "$URLS_FILE" 2>/dev/null; then
+        notif_warn "Feed already exists" "$url"
+        return
+    fi
+
+    local title
+    title=$(echo "" | dm "Custom title (blank = use feed title) >") || true
+
+    local tags
+    tags=$(echo "" | dm "Tags (space-separated, blank = none) >") || true
+
+    # Backup before modifying
+    cp "$URLS_FILE" "$URLS_FILE.bak"
+
+    local entry="$url"
+    [[ -n "$title" ]] && entry="${entry} \"~${title}\""
+    [[ -n "$tags"  ]] && entry="${entry} ${tags}"
+
+    echo "$entry" >> "$URLS_FILE"
+    notif_ok "Feed added" "${title:-$url}${tags:+ [$tags]}"
+}
+
+# ── Menu: Tags ─────────────────────────────────────────────────────────────────
+menu_tags() {
+    local action
+    action=$(printf '%s\n' \
+        " View feeds by tag" \
+        " Create / assign tag" \
+        " Remove tag from feed" \
+        | dm "Tags >") || return 0
+
+    case "$action" in
+        *"View"*)   tag_view   ;;
+        *"Create"*) tag_create ;;
+        *"Remove"*) tag_remove ;;
+    esac
+}
+
+tag_view() {
+    local tags=()
+    while IFS= read -r t; do tags+=("$t"); done < <(list_tags)
+
+    if [[ "${#tags[@]}" -eq 0 ]]; then
+        notif_info "No tags found" "Add tags when creating/editing feeds"
+        return
+    fi
+
+    # Build list with unread counts per tag
+    local display=()
+    for tag in "${tags[@]}"; do
+        local cnt
+        cnt=$(unread_for_tag "$tag")
+        local badge=""
+        [[ "$cnt" -gt 0 ]] && badge="  ($cnt unread)"
+        display+=("$tag$badge")
+    done
+
+    local choice
+    choice=$(printf '%s\n' "${display[@]}" | dm "View tag >") || return 0
+    [[ -z "$choice" ]] && return 0
+
+    local tag_name
+    tag_name=$(sed 's/[[:space:]]*([0-9]* unread)$//' <<< "$choice")
+
+    local feed_urls=()
+    while IFS='|' read -r _ url; do
+        feed_urls+=("$url")
+    done < <(feeds_by_tag "$tag_name")
+
+    if [[ "${#feed_urls[@]}" -eq 0 ]]; then
+        notif_warn "No feeds in tag" "$tag_name"
+        return
+    fi
+
+    notif_ok "Opening tag: $tag_name" "${#feed_urls[@]} feeds"
+    open_nb_urls "${feed_urls[@]}"
+}
+
+tag_create() {
+    local tag_name
+    tag_name=$(echo "" | dm "New tag name >") || return 0
+    tag_name="${tag_name// /_}"     # tags can't have spaces – convert to underscores
+    [[ -z "$tag_name" ]] && return 0
+
+    # Build list of feeds NOT yet having this tag
+    local feed_names=() feed_urls=()
+    while IFS='|' read -r name url; do
+        feed_names+=("$name")
+        feed_urls+=("$url")
+    done < <(list_feeds)
+
+    local selected_names=()
+    while true; do
+        local menu_items=("  Done – apply tag")
+        for name in "${feed_names[@]}"; do
+            # Mark already-selected feeds
+            local marker=" "
+            for s in "${selected_names[@]}"; do [[ "$s" == "$name" ]] && marker="✔"; done
+            menu_items+=("$marker  $name")
+        done
+
+        local choice
+        choice=$(printf '%s\n' "${menu_items[@]}" | dm "Tag '$tag_name' – pick feeds >") || break
+        [[ "$choice" == *"Done"* || -z "$choice" ]] && break
+
+        local picked
+        picked=$(sed 's/^[✔ ]*  //' <<< "$choice")
+
+        # Toggle selection
+        local already=false
+        local new_sel=()
+        for s in "${selected_names[@]}"; do
+            if [[ "$s" == "$picked" ]]; then already=true; else new_sel+=("$s"); fi
+        done
+        $already && selected_names=("${new_sel[@]}") || selected_names+=("$picked")
+    done
+
+    [[ "${#selected_names[@]}" -eq 0 ]] && { notif_info "No feeds selected" "Tag not applied"; return; }
+
+    cp "$URLS_FILE" "$URLS_FILE.bak"
+
+    local applied=0
+    for feed_name in "${selected_names[@]}"; do
+        # Find URL for this name
+        local url=""
+        for i in "${!feed_names[@]}"; do
+            [[ "${feed_names[$i]}" == "$feed_name" ]] && { url="${feed_urls[$i]}"; break; }
+        done
+        [[ -z "$url" ]] && continue
+
+        # Append tag to the matching URL line (if not already tagged)
+        local esc_url
+        esc_url=$(printf '%s' "$url" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        if grep -qP "^${esc_url}" "$URLS_FILE" && ! grep -qP "^${esc_url}.*\b${tag_name}\b" "$URLS_FILE"; then
+            sed -i "s|^${esc_url}.*|& ${tag_name}|" "$URLS_FILE"
+            (( applied++ ))
+        fi
+    done
+
+    notif_ok "Tag '$tag_name' applied" "Updated $applied feed(s)"
+}
+
+tag_remove() {
+    local tags=()
+    while IFS= read -r t; do tags+=("$t"); done < <(list_tags)
+    [[ "${#tags[@]}" -eq 0 ]] && { notif_info "No tags" ""; return; }
+
+    local tag
+    tag=$(printf '%s\n' "${tags[@]}" | dm "Remove tag from which tag? >") || return 0
+    [[ -z "$tag" ]] && return 0
+
+    # Show feeds in this tag and let user pick which to untag
+    local feed_names=() feed_urls=()
+    while IFS='|' read -r name url; do
+        feed_names+=("$name")
+        feed_urls+=("$url")
+    done < <(feeds_by_tag "$tag")
+
+    [[ "${#feed_names[@]}" -eq 0 ]] && { notif_info "No feeds in tag" "$tag"; return; }
+
+    local selected_names=()
+    while true; do
+        local menu_items=("  Done")
+        for name in "${feed_names[@]}"; do
+            local marker=" "
+            for s in "${selected_names[@]}"; do [[ "$s" == "$name" ]] && marker="✔"; done
+            menu_items+=("$marker  $name")
+        done
+
+        local choice
+        choice=$(printf '%s\n' "${menu_items[@]}" | dm "Untag from '$tag' >") || break
+        [[ "$choice" == *"Done"* || -z "$choice" ]] && break
+
+        local picked
+        picked=$(sed 's/^[✔ ]*  //' <<< "$choice")
+        local already=false new_sel=()
+        for s in "${selected_names[@]}"; do
+            [[ "$s" == "$picked" ]] && already=true || new_sel+=("$s")
+        done
+        $already && selected_names=("${new_sel[@]}") || selected_names+=("$picked")
+    done
+
+    [[ "${#selected_names[@]}" -eq 0 ]] && return 0
+
+    cp "$URLS_FILE" "$URLS_FILE.bak"
+    local removed=0
+    for feed_name in "${selected_names[@]}"; do
+        local url=""
+        for i in "${!feed_names[@]}"; do
+            [[ "${feed_names[$i]}" == "$feed_name" ]] && { url="${feed_urls[$i]}"; break; }
+        done
+        [[ -z "$url" ]] && continue
+        local esc_url
+        esc_url=$(printf '%s' "$url" | sed 's/[[\.*^$()+?{|]/\\&/g')
+        # Remove the tag word from the line
+        sed -i "s|^\(${esc_url}.*\)\b${tag}\b|\1|; s/[[:space:]]*$//" "$URLS_FILE"
+        (( removed++ ))
+    done
+    notif_ok "Tag '$tag' removed" "From $removed feed(s)"
+}
+
+# ── Menu: Refresh ──────────────────────────────────────────────────────────────
+# Opens a terminal running newsboat with `-x "reload; quit"` so it refreshes
+# and auto-exits, then we fire a completion notification.
+
+do_refresh_in_term() {
+    # $1 = human label shown in notification
+    # $2 = optional -u /tmp/file arg
+    local label="$1" extra_args="${2:-}"
+    notif_info "Refreshing…" "$label"
+
+    # Run newsboat, then signal completion via notify-send, then close terminal
+    local cmd="newsboat ${extra_args} -x 'reload; quit' -c '${CACHE_DB}' 2>/dev/null"
+    cmd+=" && notify-send -a 'Newsboat' -u normal -i 'application-rss+xml' '✔  Refresh complete' '${label}'"
+    cmd+=" || notify-send -a 'Newsboat' -u critical -i 'application-rss+xml' '✗  Refresh error' '${label}'"
+
+    $TERM_EMU -e bash -c "$cmd" &
+}
+
+menu_refresh() {
+    local options=()
+
+    # All feeds with total unread
+    local total; total=$(unread_total)
+    options+=("  Refresh ALL feeds$(  [[ $total -gt 0 ]] && echo "  ($total unread)")")
+
+    # Tags with unread counts
+    while IFS= read -r tag; do
+        local cnt; cnt=$(unread_for_tag "$tag")
+        local badge=""
+        [[ "$cnt" -gt 0 ]] && badge="  ($cnt)"
+        options+=(" [tag]  ${tag}${badge}")
+    done < <(list_tags)
+
+    # Individual feeds
+    while IFS='|' read -r name url; do
+        local cnt; cnt=$(unread_for_url "$url")
+        local badge=""
+        [[ "$cnt" -gt 0 ]] && badge="  ($cnt)"
+        options+=(" ${name}${badge}")
+    done < <(list_feeds)
+
+    local choice
+    choice=$(printf '%s\n' "${options[@]}" | dm "Refresh >") || return 0
+    [[ -z "$choice" ]] && return 0
+
+    if [[ "$choice" == *"Refresh ALL"* ]]; then
+        do_refresh_in_term "All feeds"
+        return
+    fi
+
+    if [[ "$choice" == *"[tag]"* ]]; then
+        local tag
+        tag=$(sed 's/.*\[tag\][[:space:]]*//' <<< "$choice" | sed 's/[[:space:]]*([0-9]*).*//')
+        local tmp; tmp=$(mktemp /tmp/nb_dmenu_XXXXXX.urls)
+        feeds_by_tag "$tag" | cut -d'|' -f2 > "$tmp"
+        local count; count=$(wc -l < "$tmp")
+        do_refresh_in_term "Tag: $tag ($count feeds)" "-u '$tmp'"
+        # temp file cleaned up after newsboat exits via the cmd string
+        return
+    fi
+
+    # Individual feed – strip badge and icon
+    local name_only
+    name_only=$(sed 's/[[:space:]]*([0-9]*)$//' <<< "$choice" | sed 's/^[[:space:]]*//')
+    local url
+    url=$(list_feeds | awk -F'|' -v n="$name_only" '$1==n{print $2;exit}')
+    [[ -z "$url" ]] && { notif_err "Feed not found" "$name_only"; return; }
+    local tmp; tmp=$(mktemp /tmp/nb_dmenu_XXXXXX.urls)
+    echo "$url" > "$tmp"
+    do_refresh_in_term "$name_only" "-u '$tmp'"
+}
+
+# ── Menu: OPML Import / Export ─────────────────────────────────────────────────
+pick_file_path() {
+    # $1 = dialog title
+    # Tries: zenity → kdialog → dmenu text input
+    if command -v zenity &>/dev/null; then
+        zenity --file-selection --title="$1" 2>/dev/null || true
+    elif command -v kdialog &>/dev/null; then
+        kdialog --getopenfilename "$HOME" "OPML files (*.opml *.xml)" 2>/dev/null || true
+    else
+        echo "$HOME/newsboat_feeds.opml" | dm "$1 (type path) >" || true
+    fi
+}
+
+pick_save_path() {
+    local default="$HOME/newsboat_$(date +%Y%m%d).opml"
+    if command -v zenity &>/dev/null; then
+        zenity --file-selection --save --confirm-overwrite \
+            --title="Save OPML" --filename="$default" 2>/dev/null || true
+    elif command -v kdialog &>/dev/null; then
+        kdialog --getsavefilename "$default" "OPML files (*.opml)" 2>/dev/null || true
+    else
+        echo "$default" | dm "Save OPML to (type path) >" || true
+    fi
+}
+
+menu_opml() {
+    local action
+    action=$(printf '%s\n' \
+        " Export OPML" \
+        " Import OPML" \
+        | dm "OPML >") || return 0
+
+    case "$action" in
+        *"Export"*)
+            local out_file
+            out_file=$(pick_save_path) || return 0
+            [[ -z "$out_file" ]] && return 0
+            if newsboat --export-to-opml > "$out_file" 2>/dev/null; then
+                notif_ok "OPML exported" "$out_file"
+            else
+                notif_err "Export failed" "Check newsboat output"
+            fi
+            ;;
+
+        *"Import"*)
+            local in_file
+            in_file=$(pick_file_path "Select OPML to import") || return 0
+            [[ -z "$in_file" || ! -f "$in_file" ]] && { notif_err "File not found" "${in_file:-}"; return; }
+
+            # Count feeds before import
+            local before; before=$(grep -c '^https\?://' "$URLS_FILE" 2>/dev/null || echo 0)
+
+            cp "$URLS_FILE" "$URLS_FILE.bak"
+            if newsboat --import-from-opml "$in_file" 2>/dev/null; then
+                local after; after=$(grep -c '^https\?://' "$URLS_FILE" 2>/dev/null || echo 0)
+                local added=$(( after - before ))
+                notif_ok "OPML imported" "$added new feed(s) added  ·  backup: urls.bak"
+            else
+                notif_err "Import failed" "$in_file"
+                cp "$URLS_FILE.bak" "$URLS_FILE"
+            fi
+            ;;
+    esac
+}
+
+# ── Bonus: Feed health check ───────────────────────────────────────────────────
+# QoL feature: list feeds that have never delivered an item (probably dead/broken).
+menu_health() {
+    [[ -f "$CACHE_DB" ]] || { notif_info "No cache DB" "Run a full refresh first"; return; }
+
+    notif_info "Checking feed health…" "Querying cache"
+
+    # Feeds in urls file
+    local all_urls=()
+    while IFS='|' read -r _ url; do
+        all_urls+=("$url")
+    done < <(list_feeds)
+
+    local dead=()
+    for url in "${all_urls[@]}"; do
+        local count
+        count=$(sqlite3 "$CACHE_DB" \
+            "SELECT COUNT(*) FROM rss_item WHERE rssurl='${url//\'/\'\'}';" 2>/dev/null || echo -1)
+        [[ "$count" -eq 0 ]] && dead+=("$url")
+    done
+
+    if [[ "${#dead[@]}" -eq 0 ]]; then
+        notif_ok "All feeds healthy" "${#all_urls[@]} feeds checked"
+        return
+    fi
+
+    # Let user pick one to remove
+    local choice
+    choice=$(printf '%s\n' "${dead[@]}" "--- Cancel ---" | dm "Dead feeds (0 items) – remove? >") || return 0
+    [[ -z "$choice" || "$choice" == "---"* ]] && return 0
+
+    cp "$URLS_FILE" "$URLS_FILE.bak"
+    local esc
+    esc=$(printf '%s' "$choice" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    sed -i "/^${esc}/d" "$URLS_FILE"
+    notif_ok "Feed removed" "$choice"
+}
+
+# ── Main menu ──────────────────────────────────────────────────────────────────
+main() {
+    ensure_deps
+    ensure_urls
+
+    local total; total=$(unread_total)
+    local badge=""
+    [[ "$total" -gt 0 ]] && badge="  ($total unread)"
+
+    local choice
+    choice=$(printf '%s\n' \
+        "󰑓  Refresh Feeds" \
+        "󰸉  Browse Feeds${badge}" \
+        "󰐕  Add Feed" \
+        "󰓹  Tags" \
+        "󰄲  Import / Export OPML" \
+        "󰚑  Feed Health Check" \
+        "󰩃  Quit" \
+        | dm "Newsboat${badge} >") || exit 0
+
+    [[ -z "$choice" ]] && exit 0
+
+    case "$choice" in
+        *"Refresh"*)           menu_refresh ;;
+        *"Browse"*)            menu_browse  ;;
+        *"Add Feed"*)          menu_add_feed ;;
+        *"Tags"*)              menu_tags    ;;
+        *"Import"*|*"Export"*) menu_opml    ;;
+        *"Health"*)            menu_health  ;;
+        *"Quit"*)              exit 0       ;;
+    esac
+}
+
+main
