@@ -1,11 +1,39 @@
 #!/usr/bin/env bash
 
 OUTPUT="eDP-1"
+STATE_FILE="$HOME/.cache/display_mode"
 
-# Wait until X is fully ready (important)
-sleep 1
+mkdir -p "$HOME/.cache"
 
-# Add mode safely (ignore errors if already exists)
+# Wait until X is ready (robust)
+for i in {1..5}; do
+    xrandr >/dev/null 2>&1 && break
+    sleep 0.5
+done
+
+# Add 4:3 mode safely
 xrandr --newmode "1440x1080_60" 129.00 1440 1528 1680 1920 1080 1083 1087 1120 -hsync +vsync 2>/dev/null
 xrandr --addmode "$OUTPUT" 1440x1080_60 2>/dev/null
 
+# Default if no state exists
+if [ ! -f "$STATE_FILE" ]; then
+    echo "normal" > "$STATE_FILE"
+fi
+
+mode=$(cat "$STATE_FILE")
+
+if [ "$mode" = "crt" ]; then
+    # ── RESTORE CRT MODE ──────────────────────
+    xrandr --output "$OUTPUT" \
+        --mode 1440x1080_60 \
+        --scale 0.96x0.96 \
+        --pos 240x0 \
+        --gamma 0.9:0.9:0.9 \
+        --brightness 0.92
+else
+    # ── RESTORE NORMAL MODE ───────────────────
+    xrandr --output "$OUTPUT" \
+        --mode 1920x1080 \
+        --scale 1x1 \
+        --pos 0x0
+fi
