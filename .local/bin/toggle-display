@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+OUTPUT="eDP-1"
+STATE_FILE="$HOME/.cache/display_mode"
+
+# default to normal if file doesn't exist
+if [ ! -f "$STATE_FILE" ]; then
+    echo "normal" > "$STATE_FILE"
+fi
+
+mode=$(cat "$STATE_FILE")
+
+if [ "$mode" = "crt" ]; then
+    # ── SWITCH TO NORMAL ───────────────────────
+    xrandr --output "$OUTPUT" \
+        --mode 1920x1080 \
+        --scale 1x1 \
+        --pos 0x0 \
+
+    echo "normal" > "$STATE_FILE"
+    notify-send "Display" "16:9 Normal Mode"
+
+else
+    # ── SWITCH TO CRT ──────────────────────────
+    xrandr --output "$OUTPUT" \
+        --mode 1440x1080_60 \
+        --scale 0.96x0.96 \
+        --pos 240x0 \
+        --gamma 0.9:0.9:0.9 \
+        --brightness 0.67
+
+    echo "crt" > "$STATE_FILE"
+    notify-send "Display" "4:3 CRT Mode"
+fi

@@ -8,9 +8,8 @@ if [ "$WM" = "dwm" ]; then
     pidof dwmblocks >/dev/null || dwmblocks &
     pidof xsct >/dev/null || xsct 4200 &
 #    $HOME/.local/bin/setbg
-    picom &
     dunst &
-    feh --bg-fill --randomize /usr/share/backgrounds/
+    feh --bg-fill --randomize $HOME/.local/share/wallpapers/
     nm-applet &
     /usr/bin/kdeconnectd &
 

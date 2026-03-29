@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+OUTPUT="eDP-1"
+
+# Wait until X is fully ready (important)
+sleep 1
+
+# Add mode safely (ignore errors if already exists)
+xrandr --newmode "1440x1080_60" 129.00 1440 1528 1680 1920 1080 1083 1087 1120 -hsync +vsync 2>/dev/null
+xrandr --addmode "$OUTPUT" 1440x1080_60 2>/dev/null
+
