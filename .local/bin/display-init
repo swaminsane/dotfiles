@@ -29,7 +29,7 @@ if [ "$mode" = "crt" ]; then
         --scale 0.96x0.96 \
         --pos 240x0 \
         --gamma 0.9:0.9:0.9 \
-        --brightness 0.92
+        --brightness 0.89
 else
     # ── RESTORE NORMAL MODE ───────────────────
     xrandr --output "$OUTPUT" \

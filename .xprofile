@@ -12,5 +12,4 @@ if [ "$WM" = "dwm" ]; then
     feh --bg-fill --randomize $HOME/.local/share/wallpapers/
     nm-applet &
     /usr/bin/kdeconnectd &
-
 fi

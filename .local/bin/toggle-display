@@ -29,7 +29,7 @@ else
         --scale 0.96x0.96 \
         --pos 240x0 \
         --gamma 0.9:0.9:0.9 \
-        --brightness 0.67
+        --brightness 0.89
 
     echo "crt" > "$STATE_FILE"
     notify-send "Display" "4:3 CRT Mode"
