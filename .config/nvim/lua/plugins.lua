@@ -66,42 +66,7 @@ vim.lsp.enable("pyright")
     end,
   },
 
-
-  -- ── Autocompletion ─────────────────────────────────────────────────────
-  {
-    "hrsh7th/nvim-cmp",
-    dependencies = {
-      "hrsh7th/cmp-nvim-lsp",
-      "hrsh7th/cmp-buffer",
-      "hrsh7th/cmp-path",
-    },
-    config = function()
-      local cmp = require("cmp")
-      cmp.setup({
-        mapping = cmp.mapping.preset.insert({
-          ["<Tab>"]     = cmp.mapping.select_next_item(),
-          ["<S-Tab>"]   = cmp.mapping.select_prev_item(),
-          ["<CR>"]      = cmp.mapping.confirm({ select = true }),
-          ["<C-Space>"] = cmp.mapping.complete(),
-          ["<C-e>"]     = cmp.mapping.abort(),
-        }),
-        sources = cmp.config.sources({
-          { name = "nvim_lsp" },
-          { name = "buffer" },
-          { name = "path" },
-        }),
-        formatting = {
-          format = function(entry, item)
-            local labels = { nvim_lsp = "[LSP]", buffer = "[Buf]", path = "[Path]" }
-            item.menu = labels[entry.source.name] or ""
-            return item
-          end,
-        },
-      })
-    end,
-  },
-
-  -- ── Formatting (clang-format) ──────────────────────────────────────────
+   -- ── Formatting (clang-format) ──────────────────────────────────────────
   -- Requires: sudo apt install clang-format
   {
     "stevearc/conform.nvim",
@@ -193,7 +158,39 @@ vim.lsp.enable("pyright")
       vim.g.vimtex_view_forward_search_on_start = 1
     end,
   },
-
+ -- ── Autocompletion ─────────────────────────────────────────────────────
+  {
+    "hrsh7th/nvim-cmp",
+    dependencies = {
+      "hrsh7th/cmp-nvim-lsp",
+      "hrsh7th/cmp-buffer",
+      "hrsh7th/cmp-path",
+    },
+    config = function()
+      local cmp = require("cmp")
+      cmp.setup({
+        mapping = cmp.mapping.preset.insert({
+          ["<Tab>"]     = cmp.mapping.select_next_item(),
+          ["<S-Tab>"]   = cmp.mapping.select_prev_item(),
+          ["<CR>"]      = cmp.mapping.confirm({ select = true }),
+          ["<C-Space>"] = cmp.mapping.complete(),
+          ["<C-e>"]     = cmp.mapping.abort(),
+        }),
+        sources = cmp.config.sources({
+          { name = "nvim_lsp" },
+          { name = "buffer" },
+          { name = "path" },
+        }),
+        formatting = {
+          format = function(entry, item)
+            local labels = { nvim_lsp = "[LSP]", buffer = "[Buf]", path = "[Path]" }
+            item.menu = labels[entry.source.name] or ""
+            return item
+          end,
+        },
+      })
+    end,
+  },
   -- ── File Tree ──────────────────────────────────────────────────────────
   {
     "nvim-tree/nvim-tree.lua",

@@ -2,9 +2,7 @@
 # see /usr/share/doc/bash/examples/startup-files (in the package bash-doc)
 # for examples
 
-
-# Example fancy prompt
-PS1="\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ "
+cd() { builtin cd "$@" && pwd > /tmp/last_dir; }
 
 # aliases
 alias rm="rm -I"
@@ -12,7 +10,7 @@ alias shred="shred -v"
 alias yta="yt -x -f audbooks"
 alias adbc=".local/bin/adbc"
 alias apti="sudo apt install"
-alias f="fz"
+alias f="lf"
 alias nano="nano -l"
 alias soundr="systemctl --user restart pipewire.service"
 alias dots='git --git-dir=$HOME/dotfiles --work-tree=$HOME'
