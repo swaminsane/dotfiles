@@ -1,0 +1,51 @@
+#!/bin/bash
+
+HISTORY=~/.cache/surf_history
+touch "$HISTORY"
+
+open_url() {
+    url="$1"
+    case "$url" in
+        http://*|https://*|file://*) ;;
+        *.*) url="https://$url" ;;
+        *) url="https://www.google.com/search?q=$(echo "$url" | sed 's/ /+/g')" ;;
+    esac
+
+    # Check for existing tabbed instance
+    wid=$(xdotool search --class tabbed 2>/dev/null | head -1)
+
+    if [ -z "$wid" ]; then
+        wid=$(tabbed -d)
+    fi
+
+    surf -e "$wid" "$url" &
+    echo "$url" >> "$HISTORY"
+}
+
+mode=$(printf "open\nhome\nbookmarks\nhistory\ndownloads" | dmenu -p "Surf:")
+[ -z "$mode" ] && exit
+
+case "$mode" in
+    open)
+        query=$(printf "http://localhost:8080\nhttp://localhost:8384\n%s" "$(tac "$HISTORY" | sort -u)" | dmenu -l 20 -p "Open:")
+        [ -z "$query" ] && exit
+        open_url "$query"
+        ;;
+    home)
+        open_url "http://localhost:8080"
+        ;;
+    bookmarks)
+        chosen=$(printf "GitHub|https://github.com/swaminsane\nSite|https://swaminsane.github.io\nArch Wiki|https://wiki.archlinux.org\nArchive|https://archive.org/details/@swami_vivekanand712/collections\nInvidious|https://invidious.nerdvpn.de" | dmenu -l 10 -p "Bookmarks:")
+        [ -z "$chosen" ] && exit
+        url=$(echo "$chosen" | cut -d'|' -f2)
+        open_url "$url"
+        ;;
+    history)
+        chosen=$(tac "$HISTORY" | sort -u | dmenu -l 20 -p "History:")
+        [ -z "$chosen" ] && exit
+        open_url "$chosen"
+        ;;
+    downloads)
+        open_url "file://$HOME/Downloads"
+        ;;
+esac

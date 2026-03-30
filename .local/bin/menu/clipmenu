@@ -1,0 +1,69 @@
+#!/bin/bash
+
+HISTORY=~/.cache/clip_history
+PINNED=~/.cache/clip_pinned
+PICS=/redmi/DCIM/Screenshots/linux
+
+touch "$HISTORY" "$PINNED"
+mkdir -p "$PICS"
+
+current=$(xclip -o -selection clipboard 2>/dev/null | tr $'\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
+if [ -n "$current" ]; then
+    grep -qxF "$current" "$HISTORY" || echo "$current" >> "$HISTORY"
+fi
+
+preview() {
+    while IFS= read -r line; do
+        if [ ${#line} -gt 60 ]; then
+            echo "${line:0:30} ... ${line: -20}"
+        else
+            echo "$line"
+        fi
+    done
+}
+
+match() {
+    file="$1"; chosen="$2"
+    while IFS= read -r line; do
+        if [ ${#line} -gt 60 ]; then
+            label="${line:0:30} ... ${line: -20}"
+        else
+            label="$line"
+        fi
+        [ "$label" = "$chosen" ] && echo "$line" && return
+    done < "$file"
+}
+
+mode=$(printf "recent\npinned\npics" | dmenu -p "Clipboard:")
+
+case "$mode" in
+    recent)
+        chosen=$(tac "$HISTORY" | preview | dmenu -l 20 -p "Recent:")
+        [ -z "$chosen" ] && exit
+        full=$(match "$HISTORY" "$chosen")
+        [ -z "$full" ] && full="$chosen"
+        action=$(printf "copy\npin" | dmenu -p "Action:")
+        case "$action" in
+            copy) echo -n "$full" | xclip -selection clipboard ;;
+            pin) grep -qxF "$full" "$PINNED" || echo "$full" >> "$PINNED" ;;
+        esac ;;
+    pinned)
+        chosen=$(cat "$PINNED" | preview | dmenu -l 20 -p "Pinned:")
+        [ -z "$chosen" ] && exit
+        full=$(match "$PINNED" "$chosen")
+        [ -z "$full" ] && full="$chosen"
+        action=$(printf "copy\nunpin" | dmenu -p "Action:")
+        case "$action" in
+            copy) echo -n "$full" | xclip -selection clipboard ;;
+            unpin) grep -vxF "$full" "$PINNED" > /tmp/clip_tmp && mv /tmp/clip_tmp "$PINNED" ;;
+        esac ;;
+    pics)
+        chosen=$(ls -t "$PICS" | dmenu -l 20 -p "Screenshots:")
+        [ -z "$chosen" ] && exit
+        action=$(printf "open\ncopy\ndelete" | dmenu -p "Action:")
+        case "$action" in
+            copy) xclip -selection clipboard -t image/png -i "$PICS/$chosen" ;;
+            open) nsxiv "$PICS/$chosen" & ;;
+            delete) rm "$PICS/$chosen" ;;
+        esac ;;
+esac

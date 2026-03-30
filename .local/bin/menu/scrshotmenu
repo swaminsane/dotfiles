@@ -1,0 +1,43 @@
+#!/bin/bash
+
+DIR=/redmi/DCIM/Screenshots/linux
+mkdir -p "$DIR"
+
+action=$(printf "fullscreen\nregion\nwindow\ndelay\nannotate\nrename" | dmenu -p "Screenshot:")
+[ -z "$action" ] && exit
+
+case "$action" in
+    fullscreen)
+        FILE="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+        scrot "$FILE"
+        ;;
+    region)
+        FILE="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+        scrot -s "$FILE"
+        ;;
+    window)
+        FILE="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+        scrot -u "$FILE"
+        ;;
+    delay)
+        FILE="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+        sleep 5 && scrot "$FILE"
+        ;;
+    annotate)
+        FILE="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+        scrot -s "$FILE" && swappy -f "$FILE"
+        ;;
+    rename)
+        name=$(echo "" | dmenu -p "Filename:")
+        [ -z "$name" ] && exit
+        FILE="$DIR/${name}.png"
+        type=$(printf "fullscreen\nregion\nwindow" | dmenu -p "Type:")
+        case "$type" in
+            fullscreen) scrot "$FILE" ;;
+            region) scrot -s "$FILE" ;;
+            window) scrot -u "$FILE" ;;
+        esac
+        ;;
+esac
+
+[ -f "$FILE" ] && xclip -selection clipboard -t image/png -i "$FILE" && notify-send "Screenshot" "Saved and copied: $(basename $FILE)"
