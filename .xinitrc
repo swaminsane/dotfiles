@@ -12,7 +12,7 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
 fi
 
 # Xrandr add custom size
-$HOME/.local/bin/display-init &
+# $HOME/.local/bin/display-init &
 
 # Load background apps
 [ -f "$HOME/.xprofile" ] && . "$HOME/.xprofile"

@@ -278,12 +278,13 @@ _playlist_from_url() {
             (
                 yt-dlp -f "$fmt" \
                     --newline \
-                    -o "${DOWNLOAD_DIR}/%(playlist_title)s/%(title)s.%(ext)s" \
+                     -o "${DOWNLOAD_DIR}/%(playlist_title)s/%(title)s.%(ext)s" \
                     "$url" >> "$LOGFILE" 2>&1 \
                     && notify "✔ Playlist download complete" "normal" \
                     || notify "✘ Playlist download failed — check $LOGFILE" "critical"
             ) &
-            ;;
+
+                               ;;
     esac
 }
 

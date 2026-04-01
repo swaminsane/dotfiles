@@ -138,10 +138,9 @@ vim.lsp.enable("pyright")
   -- ── Syntax Highlighting ────────────────────────────────────────────────
   {
   "nvim-treesitter/nvim-treesitter",
-  tag = "v0.9.3",
   build = ":TSUpdate",
   config = function()
-    require("nvim-treesitter.configs").setup({
+    require("nvim-treesitter.config").setup({
       ensure_installed = { "c", "cpp", "lua", "python", "bash", "make" },
       highlight        = { enable = true },
       indent           = { enable = true },

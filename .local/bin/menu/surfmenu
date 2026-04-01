@@ -8,7 +8,7 @@ open_url() {
     case "$url" in
         http://*|https://*|file://*) ;;
         *.*) url="https://$url" ;;
-        *) url="https://www.google.com/search?q=$(echo "$url" | sed 's/ /+/g')" ;;
+        *) url="https://www.startpage.com/search?q=$(echo "$url" | sed 's/ /+/g')" ;;
     esac
 
     # Check for existing tabbed instance
@@ -22,7 +22,7 @@ open_url() {
     echo "$url" >> "$HISTORY"
 }
 
-mode=$(printf "open\nhome\nbookmarks\nhistory\ndownloads" | dmenu -p "Surf:")
+mode=$(printf "open\nfirefox\nbookmarks\nhistory\ndownloads\nhome" | dmenu -p "Surf:")
 [ -z "$mode" ] && exit
 
 case "$mode" in
@@ -47,5 +47,15 @@ case "$mode" in
         ;;
     downloads)
         open_url "file://$HOME/Downloads"
+        ;;
+    firefox)
+        query=$(printf "https://www.youtube.com\n%s" "$(tac "$HISTORY" | sort -u)" | dmenu -l 20 -p "Firefox:")
+        [ -z "$query" ] && exit
+        case "$query" in
+            http://*|https://*|file://*) ;;
+            *.*) query="https://$query" ;;
+            *) query="https://www.google.com/search?q=$(echo "$query" | sed 's/ /+/g')" ;;
+        esac
+        firefox "$query" &
         ;;
 esac
