@@ -8,7 +8,7 @@ TABBED_DIR="$HOME/.local/src/tabbed"
 THEME_FILE="$HOME/.config/theme/colors.h"
 
 # ── themes ──────────────────────────────────────────────────────────────────
-theme_original() { cat <<'EOF'
+theme_blush() { cat <<'EOF'
 #define COL_BG             "#1a1a1a"
 #define COL_FG             "#e6dcc6"
 #define COL_ACCENT         "#a65a4d"
@@ -146,16 +146,280 @@ theme_mono() { cat <<'EOF'
 EOF
 }
 
+theme_shakti() { cat <<'EOF'
+#define COL_BG             "#1a1817"
+#define COL_FG             "#e8d8c8"
+#define COL_ACCENT         "#a04a3a"
+#define COL_BORDER         "#3a2f2a"
+#define COL_RED            "#a04a3a"
+#define COL_GREEN          "#6f8a6a"
+#define COL_YELLOW         "#b08a68"
+#define COL_BLUE           "#7a8a9a"
+#define COL_MAGENTA        "#8a5a6a"
+#define COL_CYAN           "#6a8a7a"
+#define COL_WHITE          "#e8d8c8"
+#define COL_BRIGHT_BLACK   "#5a504a"
+#define COL_BRIGHT_RED     "#c06a58"
+#define COL_BRIGHT_GREEN   "#8faa88"
+#define COL_BRIGHT_YELLOW  "#e0c488"
+#define COL_BRIGHT_BLUE    "#9aa8b8"
+#define COL_BRIGHT_MAGENTA "#b08090"
+#define COL_BRIGHT_CYAN    "#88a89a"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_hermit() { cat <<'EOF'
+#define COL_BG             "#161816"
+#define COL_FG             "#d2dccf"
+#define COL_ACCENT         "#5a7a5a"
+#define COL_BORDER         "#2a332a"
+#define COL_RED            "#8a5a5a"
+#define COL_GREEN          "#5a7a5a"
+#define COL_YELLOW         "#8a8460"
+#define COL_BLUE           "#5a6a7a"
+#define COL_MAGENTA        "#6a5a6a"
+#define COL_CYAN           "#5a7a70"
+#define COL_WHITE          "#d2dccf"
+#define COL_BRIGHT_BLACK   "#4a544a"
+#define COL_BRIGHT_RED     "#9a7060"
+#define COL_BRIGHT_GREEN   "#7aa07a"
+#define COL_BRIGHT_YELLOW  "#b0a880"
+#define COL_BRIGHT_BLUE    "#7a90a5"
+#define COL_BRIGHT_MAGENTA "#907a90"
+#define COL_BRIGHT_CYAN    "#7aa098"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_coastal() { cat <<'EOF'
+#define COL_BG             "#16181b"
+#define COL_FG             "#d6dde6"
+#define COL_ACCENT         "#6a7fa3"
+#define COL_BORDER         "#2e343a"
+#define COL_RED            "#8a5a5a"
+#define COL_GREEN          "#5a8070"
+#define COL_YELLOW         "#b08a68"
+#define COL_BLUE           "#6a7fa3"
+#define COL_MAGENTA        "#7a6a8a"
+#define COL_CYAN           "#5a7880"
+#define COL_WHITE          "#d6dde6"
+#define COL_BRIGHT_BLACK   "#50565e"
+#define COL_BRIGHT_RED     "#b07a7a"
+#define COL_BRIGHT_GREEN   "#7aaa95"
+#define COL_BRIGHT_YELLOW  "#e0c488"
+#define COL_BRIGHT_BLUE    "#8aa0c0"
+#define COL_BRIGHT_MAGENTA "#9a88b0"
+#define COL_BRIGHT_CYAN    "#7aa0b0"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_desert() { cat <<'EOF'
+#define COL_BG             "#1b1816"
+#define COL_FG             "#e6d8c8"
+#define COL_ACCENT         "#8a6a7a"
+#define COL_BORDER         "#3a322e"
+#define COL_RED            "#a06a5a"
+#define COL_GREEN          "#7a8a6a"
+#define COL_YELLOW         "#b08a68"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#8a6a7a"
+#define COL_CYAN           "#6a8a8a"
+#define COL_WHITE          "#e6d8c8"
+#define COL_BRIGHT_BLACK   "#5a524e"
+#define COL_BRIGHT_RED     "#c08070"
+#define COL_BRIGHT_GREEN   "#9ab080"
+#define COL_BRIGHT_YELLOW  "#e0c488"
+#define COL_BRIGHT_BLUE    "#8aa0b0"
+#define COL_BRIGHT_MAGENTA "#b090a0"
+#define COL_BRIGHT_CYAN    "#8ab0b0"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_shinto() { cat <<'EOF'
+#define COL_BG             "#161616"
+#define COL_FG             "#ddd8cf"
+#define COL_ACCENT         "#7a8a7a"
+#define COL_BORDER         "#303030"
+#define COL_RED            "#8a5a5a"
+#define COL_GREEN          "#7a8a7a"
+#define COL_YELLOW         "#a0906a"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#8a7a8a"
+#define COL_CYAN           "#6a8a8a"
+#define COL_WHITE          "#ddd8cf"
+#define COL_BRIGHT_BLACK   "#505050"
+#define COL_BRIGHT_RED     "#a07070"
+#define COL_BRIGHT_GREEN   "#9ab09a"
+#define COL_BRIGHT_YELLOW  "#c0b080"
+#define COL_BRIGHT_BLUE    "#8aa0b0"
+#define COL_BRIGHT_MAGENTA "#a090a0"
+#define COL_BRIGHT_CYAN    "#8ab0b0"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_ink() { cat <<'EOF'
+#define COL_BG             "#141516"
+#define COL_FG             "#d4d7db"
+#define COL_ACCENT         "#6a7a8a"
+#define COL_BORDER         "#2a2d30"
+#define COL_RED            "#7a6a6a"
+#define COL_GREEN          "#6a7a70"
+#define COL_YELLOW         "#8a846a"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#7a6a7a"
+#define COL_CYAN           "#6a808a"
+#define COL_WHITE          "#d4d7db"
+#define COL_BRIGHT_BLACK   "#4a4d50"
+#define COL_BRIGHT_RED     "#9a8080"
+#define COL_BRIGHT_GREEN   "#8aa098"
+#define COL_BRIGHT_YELLOW  "#b0a880"
+#define COL_BRIGHT_BLUE    "#8aa0b8"
+#define COL_BRIGHT_MAGENTA "#9a90a0"
+#define COL_BRIGHT_CYAN    "#8aa8b0"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_gray_dark() { cat <<'EOF'
+#define COL_BG             "#121212"
+#define COL_FG             "#d4d4d4"
+#define COL_ACCENT         "#8a8a8a"
+#define COL_BORDER         "#2a2a2a"
+#define COL_RED            "#7a7a7a"
+#define COL_GREEN          "#8a8a8a"
+#define COL_YELLOW         "#a0a0a0"
+#define COL_BLUE           "#6a6a6a"
+#define COL_MAGENTA        "#909090"
+#define COL_CYAN           "#9a9a9a"
+#define COL_WHITE          "#d4d4d4"
+#define COL_BRIGHT_BLACK   "#505050"
+#define COL_BRIGHT_RED     "#9a9a9a"
+#define COL_BRIGHT_GREEN   "#b0b0b0"
+#define COL_BRIGHT_YELLOW  "#c0c0c0"
+#define COL_BRIGHT_BLUE    "#909090"
+#define COL_BRIGHT_MAGENTA "#b8b8b8"
+#define COL_BRIGHT_CYAN    "#c8c8c8"
+#define COL_BRIGHT_WHITE   "#ffffff"
+EOF
+}
+
+theme_gray_light() { cat <<'EOF'
+#define COL_BG             "#f2f2f2"
+#define COL_FG             "#2a2a2a"
+#define COL_ACCENT         "#707070"
+#define COL_BORDER         "#d0d0d0"
+#define COL_RED            "#606060"
+#define COL_GREEN          "#707070"
+#define COL_YELLOW         "#808080"
+#define COL_BLUE           "#505050"
+#define COL_MAGENTA        "#787878"
+#define COL_CYAN           "#808080"
+#define COL_WHITE          "#2a2a2a"
+#define COL_BRIGHT_BLACK   "#a0a0a0"
+#define COL_BRIGHT_RED     "#808080"
+#define COL_BRIGHT_GREEN   "#909090"
+#define COL_BRIGHT_YELLOW  "#a0a0a0"
+#define COL_BRIGHT_BLUE    "#707070"
+#define COL_BRIGHT_MAGENTA "#989898"
+#define COL_BRIGHT_CYAN    "#a8a8a8"
+#define COL_BRIGHT_WHITE   "#000000"
+EOF
+}
+
+theme_paper() { cat <<'EOF'
+#define COL_BG             "#f4f1ea"
+#define COL_FG             "#2b2a28"
+#define COL_ACCENT         "#8a7a6a"
+#define COL_BORDER         "#d8d2c8"
+#define COL_RED            "#a06a5a"
+#define COL_GREEN          "#6f8a6a"
+#define COL_YELLOW         "#b89a5a"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#8a6a7a"
+#define COL_CYAN           "#6a8a8a"
+#define COL_WHITE          "#2b2a28"
+#define COL_BRIGHT_BLACK   "#a8a29a"
+#define COL_BRIGHT_RED     "#c08070"
+#define COL_BRIGHT_GREEN   "#8faa88"
+#define COL_BRIGHT_YELLOW  "#d0b070"
+#define COL_BRIGHT_BLUE    "#8aa0b0"
+#define COL_BRIGHT_MAGENTA "#b090a0"
+#define COL_BRIGHT_CYAN    "#8ab0b0"
+#define COL_BRIGHT_WHITE   "#000000"
+EOF
+}
+
+theme_light_cool() { cat <<'EOF'
+#define COL_BG             "#eef1f4"
+#define COL_FG             "#2a2e33"
+#define COL_ACCENT         "#6a7a8a"
+#define COL_BORDER         "#d2d8de"
+#define COL_RED            "#8a5a5a"
+#define COL_GREEN          "#5a8070"
+#define COL_YELLOW         "#a09060"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#7a6a8a"
+#define COL_CYAN           "#5a7880"
+#define COL_WHITE          "#2a2e33"
+#define COL_BRIGHT_BLACK   "#a0a8b0"
+#define COL_BRIGHT_RED     "#b07a7a"
+#define COL_BRIGHT_GREEN   "#7aaa95"
+#define COL_BRIGHT_YELLOW  "#c0b080"
+#define COL_BRIGHT_BLUE    "#8aa0c0"
+#define COL_BRIGHT_MAGENTA "#9a88b0"
+#define COL_BRIGHT_CYAN    "#7aa0b0"
+#define COL_BRIGHT_WHITE   "#000000"
+EOF
+}
+
+theme_light_nature() { cat <<'EOF'
+#define COL_BG             "#f0f3ec"
+#define COL_FG             "#2a2f2a"
+#define COL_ACCENT         "#6a8a6a"
+#define COL_BORDER         "#d6ddd2"
+#define COL_RED            "#8a5a4a"
+#define COL_GREEN          "#6a8a6a"
+#define COL_YELLOW         "#a09060"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#7a6a7a"
+#define COL_CYAN           "#6a8a8a"
+#define COL_WHITE          "#2a2f2a"
+#define COL_BRIGHT_BLACK   "#a0a8a0"
+#define COL_BRIGHT_RED     "#b07a65"
+#define COL_BRIGHT_GREEN   "#8fb08f"
+#define COL_BRIGHT_YELLOW  "#c0b880"
+#define COL_BRIGHT_BLUE    "#8aa0b0"
+#define COL_BRIGHT_MAGENTA "#a080a0"
+#define COL_BRIGHT_CYAN    "#8ab0b0"
+#define COL_BRIGHT_WHITE   "#000000"
+EOF
+}
+
 # ── pick theme ───────────────────────────────────────────────────────────────
-CHOICE=$(printf "original\nslate\nember\nmoss\ndusk\nmono" | dmenu -p "theme:")
+CHOICE=$(printf "blush\nslate\nember\nmoss\ndusk\nmono\nshakti\nhermit\ncoastal\ndesert\nshinto\nink\ngray_dark\ngray_light\npaper\nlight_cool\nlight_nature" | dmenu -p "theme:")
 
 case "$CHOICE" in
-  original) theme_original > "$THEME_FILE" ;;
+  blush) theme_blush > "$THEME_FILE" ;;
   slate)    theme_slate    > "$THEME_FILE" ;;
   ember)    theme_ember    > "$THEME_FILE" ;;
   moss)     theme_moss     > "$THEME_FILE" ;;
   dusk)     theme_dusk     > "$THEME_FILE" ;;
   mono)     theme_mono     > "$THEME_FILE" ;;
+  shakti)   theme_shakti   > "$THEME_FILE" ;;
+  hermit)   theme_hermit   > "$THEME_FILE" ;;
+  coastal)   theme_coastal   > "$THEME_FILE" ;;
+  desert)   theme_desert   > "$THEME_FILE" ;;
+  shinto)   theme_shinto   > "$THEME_FILE" ;;
+  ink)   theme_ink   > "$THEME_FILE" ;;
+  gray_dark)     theme_gray_dark     > "$THEME_FILE" ;;
+  gray_light)    theme_gray_light    > "$THEME_FILE" ;;
+  paper)         theme_paper         > "$THEME_FILE" ;;
+  light_cool)    theme_light_cool    > "$THEME_FILE" ;;
+  light_nature)  theme_light_nature  > "$THEME_FILE" ;;
   *)        exit 1 ;;
 esac
 
@@ -168,3 +432,4 @@ for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR"; do
 done
 
 echo "Done. Restart dwm to apply :D"
+notify-send "Done"

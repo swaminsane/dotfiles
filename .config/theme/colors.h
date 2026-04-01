@@ -1,65 +1,19 @@
-/* theme 1
-
-// base
-#define COL_BG "#1a1a1a"
-#define COL_FG "#e6dcc6"
-
-// accents
-#define COL_RED "#a65a4d"
-#define COL_GREEN "#6a8f8b"
-#define COL_YELLOW "#c2a36b"
-#define COL_BLUE "#7a8fa3"
-#define COL_MAGENTA "#8a6f8f"
-#define COL_CYAN "#6a8f8b"
-#define COL_WHITE "#e6dcc6"
-
-// bright
-#define COL_BRIGHT_BLACK "#5a5a5a"
-#define COL_BRIGHT_RED "#d07a6b"
-#define COL_BRIGHT_GREEN "#8fb7b2"
-#define COL_BRIGHT_YELLOW "#e0c48a"
-#define COL_BRIGHT_BLUE "#9ab0c0"
-#define COL_BRIGHT_MAGENTA "#b095b0"
-#define COL_BRIGHT_CYAN "#8fb7b2"
-#define COL_BRIGHT_WHITE "#ffffff"
-
-// roles
-#define COL_BG "#1a1a1a"
-#define COL_FG "#e6dcc6"
-#define COL_ACCENT "#a65a4d"
-#define COL_BORDER "#3a3a3a"
-
-// palette
-#define COL_RED "#a65a4d"
-#define COL_GREEN "#6a8f8b"
-
-*/
-
-/* theme 2 */
-
-// base
-#define COL_BG "#1a1a1a"
-#define COL_FG "#e6dcc6"
-
-// roles
-#define COL_ACCENT "#5f6f86"
-#define COL_BORDER "#3a3a3a"
-
-// accents
-#define COL_RED "#9a6b5f"
-#define COL_GREEN "#6f8f7a"
-#define COL_YELLOW "#bfa67a"
-#define COL_BLUE "#5f6f86"
-#define COL_MAGENTA "#7a6f8f"
-#define COL_CYAN "#6f8f8a"
-#define COL_WHITE "#e6dcc6"
-
-// bright
-#define COL_BRIGHT_BLACK "#5a5a5a"
-#define COL_BRIGHT_RED "#c08a7d"
-#define COL_BRIGHT_GREEN "#9bb7a5"
-#define COL_BRIGHT_YELLOW "#d6c49a"
-#define COL_BRIGHT_BLUE "#8fa2b8"
-#define COL_BRIGHT_MAGENTA "#a99bb5"
-#define COL_BRIGHT_CYAN "#9bb7b2"
-#define COL_BRIGHT_WHITE "#ffffff"
+#define COL_BG             "#f0f3ec"
+#define COL_FG             "#2a2f2a"
+#define COL_ACCENT         "#6a8a6a"
+#define COL_BORDER         "#d6ddd2"
+#define COL_RED            "#8a5a4a"
+#define COL_GREEN          "#6a8a6a"
+#define COL_YELLOW         "#a09060"
+#define COL_BLUE           "#6a7a8a"
+#define COL_MAGENTA        "#7a6a7a"
+#define COL_CYAN           "#6a8a8a"
+#define COL_WHITE          "#2a2f2a"
+#define COL_BRIGHT_BLACK   "#a0a8a0"
+#define COL_BRIGHT_RED     "#b07a65"
+#define COL_BRIGHT_GREEN   "#8fb08f"
+#define COL_BRIGHT_YELLOW  "#c0b880"
+#define COL_BRIGHT_BLUE    "#8aa0b0"
+#define COL_BRIGHT_MAGENTA "#a080a0"
+#define COL_BRIGHT_CYAN    "#8ab0b0"
+#define COL_BRIGHT_WHITE   "#000000"

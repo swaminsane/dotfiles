@@ -1,5 +1,6 @@
 require("options")
 require("keymaps")
 require("plugins")
-
-vim.opt.background = "dark"
+require("theme_apply")
+require("autocmd")
+-- vim.opt.background = "dark"
