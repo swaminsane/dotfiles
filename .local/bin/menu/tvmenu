@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+
+# ========= CONFIG =========
+CONFIG_DIR="${HOME}/.config/tvapp"
+SOURCE_DIR="${CONFIG_DIR}/sources"
+CACHE_DIR="${HOME}/.cache/tvapp"
+URLS_FILE="${CONFIG_DIR}/source-urls"
+FAV_FILE="${CONFIG_DIR}/favourites"
+
+DMENU="dmenu -i -l 15"
+PLAYER="mpv --really-quiet"
+
+mkdir -p "$SOURCE_DIR" "$CACHE_DIR"
+touch "$URLS_FILE" "$FAV_FILE"
+
+# ========= NOTIFY =========
+notify() {
+    command -v notify-send >/dev/null && notify-send "tvapp" "$1" || echo "[tvapp] $1"
+}
+
+# ========= HELPERS =========
+get_name_from_url() {
+    basename "$1" | sed 's/.m3u$//'
+}
+
+normalize_url() {
+    echo "$1" | sed 's|github.com|raw.githubusercontent.com|; s|/blob/|/|'
+}
+
+# ========= ADD SOURCE =========
+add_source() {
+    url=$(printf "" | $DMENU -p "Enter URL")
+    [ -z "$url" ] && return
+
+    raw_url=$(normalize_url "$url")
+    name=$(get_name_from_url "$raw_url")
+    file="${name}.txt"
+
+    echo "${file} = ${url}" >> "$URLS_FILE"
+
+    if curl -Ls "$raw_url" -o "${SOURCE_DIR}/${file}"; then
+        notify "Added: $name"
+    else
+        notify "Download failed"
+    fi
+}
+
+# ========= REFRESH =========
+refresh_one() {
+    target="$1"
+
+    grep "^${target}.txt" "$URLS_FILE" | while IFS="=" read -r left right; do
+        file=$(echo "$left" | xargs)
+        url=$(echo "$right" | xargs)
+
+        raw_url=$(normalize_url "$url")
+        tmp=$(mktemp)
+
+        if curl -Ls "$raw_url" -o "$tmp"; then
+            mv "$tmp" "${SOURCE_DIR}/${file}"
+            notify "Updated: $target"
+        else
+            rm -f "$tmp"
+            notify "Failed: $target"
+        fi
+    done
+}
+
+refresh_all() {
+    while IFS="=" read -r left right; do
+        file=$(echo "$left" | xargs)
+        url=$(echo "$right" | xargs)
+
+        [ -z "$file" ] && continue
+
+        raw_url=$(normalize_url "$url")
+        tmp=$(mktemp)
+
+        if curl -Ls "$raw_url" -o "$tmp"; then
+            mv "$tmp" "${SOURCE_DIR}/${file}"
+        else
+            rm -f "$tmp"
+            notify "Failed: $file"
+        fi
+    done < "$URLS_FILE"
+
+    notify "All sources updated"
+}
+
+refresh_menu() {
+    sources=$(cut -d'=' -f1 "$URLS_FILE" | sed 's/.txt$//' | xargs)
+
+    choice=$(printf "All\n%s" "$sources" | tr ' ' '\n' | $DMENU -p "Refresh")
+
+    case "$choice" in
+        All) refresh_all ;;
+        *) refresh_one "$choice" ;;
+    esac
+
+    parse_sources
+}
+
+# ========= PARSE =========
+parse_sources() {
+    for file in "$SOURCE_DIR"/*.txt; do
+        [ ! -f "$file" ] && continue
+
+        name=$(basename "$file" .txt)
+        outfile="${CACHE_DIR}/${name}.channels"
+
+        awk '
+        /^#EXTINF/ {
+            split($0, a, ",")
+            cname=a[2]
+            getline url
+            if (cname != "" && url ~ /^http/) {
+                print cname "|" url
+            }
+        }
+        ' "$file" > "$outfile"
+    done
+
+    notify "Parsed sources"
+}
+
+# ========= CHANNEL PLAY =========
+play_channel() {
+    channel="$1"
+    url="$2"
+
+    notify "Playing: $channel"
+    $PLAYER "$url"
+}
+
+# ========= CHANNELS =========
+channels_menu() {
+    sources=$(ls "$SOURCE_DIR" 2>/dev/null | sed 's/.txt$//')
+    [ -z "$sources" ] && notify "No sources" && return
+
+    selected=$(echo "$sources" | $DMENU -p "Sources")
+    [ -z "$selected" ] && return
+
+    file="${CACHE_DIR}/${selected}.channels"
+    [ ! -f "$file" ] && notify "No cache, refresh first" && return
+
+    channel=$(cut -d'|' -f1 "$file" | $DMENU -p "Channels")
+    [ -z "$channel" ] && return
+
+    url=$(grep -F "$channel|" "$file" | head -n1 | cut -d'|' -f2)
+
+    action=$(printf "Play\nAdd to Favourites" | $DMENU -p "$channel")
+
+    case "$action" in
+        Play) play_channel "$channel" "$url" ;;
+        "Add to Favourites")
+            echo "${channel}|${url}" >> "$FAV_FILE"
+            notify "Added to favourites"
+            ;;
+    esac
+}
+
+# ========= FAVOURITES =========
+favourites_menu() {
+    [ ! -s "$FAV_FILE" ] && notify "No favourites" && return
+
+    channel=$(cut -d'|' -f1 "$FAV_FILE" | $DMENU -p "Favourites")
+    [ -z "$channel" ] && return
+
+    url=$(grep -F "$channel|" "$FAV_FILE" | head -n1 | cut -d'|' -f2)
+
+    action=$(printf "Play\nRemove" | $DMENU -p "$channel")
+
+    case "$action" in
+        Play) play_channel "$channel" "$url" ;;
+        Remove)
+            grep -v "^${channel}|" "$FAV_FILE" > "${FAV_FILE}.tmp"
+            mv "${FAV_FILE}.tmp" "$FAV_FILE"
+            notify "Removed from favourites"
+            ;;
+    esac
+}
+
+# ========= REMOVE SOURCE =========
+remove_source() {
+    entries=$(cut -d'=' -f1 "$URLS_FILE" | sed 's/.txt$//')
+    selected=$(echo "$entries" | $DMENU -p "Remove")
+
+    [ -z "$selected" ] && return
+
+    grep -v "^${selected}.txt" "$URLS_FILE" > "${URLS_FILE}.tmp"
+    mv "${URLS_FILE}.tmp" "$URLS_FILE"
+
+    rm -f "${SOURCE_DIR}/${selected}.txt"
+    rm -f "${CACHE_DIR}/${selected}.channels"
+
+    notify "Removed: $selected"
+}
+
+# ========= SOURCES MENU =========
+sources_menu() {
+    choice=$(printf "Add\nRemove\nList" | $DMENU -p "Sources")
+
+    case "$choice" in
+        Add) add_source ;;
+        Remove) remove_source ;;
+        List) cat "$URLS_FILE" | $DMENU -l 20 ;;
+    esac
+}
+
+# ========= MAIN =========
+main_menu() {
+    choice=$(printf "Channels\nFavourites\nSources\nRefresh" | $DMENU -p "TV")
+
+    case "$choice" in
+        Channels) channels_menu ;;
+        Favourites) favourites_menu ;;
+        Sources) sources_menu ;;
+        Refresh) refresh_menu ;;
+    esac
+}
+
+main_menu

@@ -2,7 +2,32 @@
 # see /usr/share/doc/bash/examples/startup-files (in the package bash-doc)
 # for examples
 
-cd() { builtin cd "$@" && pwd > /tmp/last_dir; }
+
+# ~/.bashrc - add this block
+if [ -d "$HOME/bin" ]; then
+    PATH="$HOME/bin:$PATH"
+fi
+
+if [ -d "$HOME/.local/bin" ]; then
+    PATH="$HOME/.local/bin:$PATH"
+fi
+
+for dir in ~/.local/bin/*/; do
+    [ -d "$dir" ] && PATH="$dir:$PATH"
+done
+
+export PATH
+
+
+set_title() {
+    dir=$(pwd | sed "s|$HOME|~|")
+    echo -ne "\033]0;st: $dir\007"
+}
+PROMPT_COMMAND="pwd > /tmp/last_dir; set_title"
+eval "$(zoxide init bash)"
+
+
+
 
 # aliases
 alias rm="rm -I"
@@ -118,6 +143,7 @@ if [ -f ~/.bash_aliases ]; then
     . ~/.bash_aliases
 fi
 
+PS1='\w > '
 # enable programmable completion features (you don't need to enable
 # this, if it's already enabled in /etc/bash.bashrc and /etc/profile
 # sources /etc/bash.bashrc).
@@ -129,4 +155,7 @@ if ! shopt -oq posix; then
   fi
 fi
 export PATH="$HOME/.npm-global/bin:$PATH"
+
+
+
 
