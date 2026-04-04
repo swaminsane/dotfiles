@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+
+STATE_FILE="/tmp/pomodoro_state"
+PID_FILE="/tmp/pomodoro_pid"
+
+# -------- CONFIG --------
+SOUND_START="/usr/share/sounds/freedesktop/stereo/message.oga"
+SOUND_DONE="/usr/share/sounds/freedesktop/stereo/complete.oga"
+SOUND_BREAK="/usr/share/sounds/freedesktop/stereo/service-login.oga"
+PLAYER="paplay"   # change to aplay if needed
+# ------------------------
+
+notify() {
+    notify-send "Pomodoro" "$1"
+}
+
+sound() {
+    case "$1" in
+        start) $PLAYER "$SOUND_START" ;;
+        break) $PLAYER "$SOUND_BREAK" ;;
+        done)  $PLAYER "$SOUND_DONE" ;;
+    esac 2>/dev/null &
+}
+
+format_time() {
+    mins=$(( $1 / 60 ))
+    secs=$(( $1 % 60 ))
+    printf "%02dm %02ds" "$mins" "$secs"
+}
+
+get_status() {
+    if [[ -f "$STATE_FILE" ]]; then
+        IFS="|" read -r label end < "$STATE_FILE"
+        now=$(date +%s)
+        remaining=$(( end - now ))
+
+        if (( remaining > 0 )); then
+            echo "$label ($(format_time $remaining) left)"
+        else
+            echo "Idle"
+        fi
+    else
+        echo "Idle"
+    fi
+}
+
+run_phase() {
+    duration=$1
+    label=$2
+    sound_type=$3
+
+    end=$(( $(date +%s) + duration ))
+    echo "$label|$end" > "$STATE_FILE"
+
+    notify "$label started"
+    sound "$sound_type"
+
+    while true; do
+        now=$(date +%s)
+        remaining=$(( end - now ))
+
+        (( remaining <= 0 )) && break
+        sleep 1
+    done
+
+    notify "$label finished!"
+    sound done
+}
+
+run_timer() {
+    duration=$1
+    label=$2
+
+    stop_timer
+
+    (
+        run_phase "$duration" "$label" start
+        echo "idle|0" > "$STATE_FILE"
+    ) &
+
+    echo $! > "$PID_FILE"
+}
+
+custom_timer() {
+    pomo=$(printf "" | dmenu -p "Pomodoro (minutes):")
+    [[ -z "$pomo" ]] && exit
+
+    brk=$(printf "" | dmenu -p "Break (minutes):")
+    [[ -z "$brk" ]] && exit
+
+    stop_timer
+
+    (
+        run_phase "$((pomo*60))" "Pomodoro" start
+        run_phase "$((brk*60))" "Break" break
+        echo "idle|0" > "$STATE_FILE"
+    ) &
+
+    echo $! > "$PID_FILE"
+}
+
+pause_timer() {
+    [[ -f "$PID_FILE" ]] && kill -STOP "$(cat $PID_FILE)" && notify "Paused"
+}
+
+resume_timer() {
+    [[ -f "$PID_FILE" ]] && kill -CONT "$(cat $PID_FILE)" && notify "Resumed"
+}
+
+stop_timer() {
+    if [[ -f "$PID_FILE" ]]; then
+        kill "$(cat $PID_FILE)" 2>/dev/null
+        rm -f "$PID_FILE"
+    fi
+    echo "idle|0" > "$STATE_FILE"
+}
+
+status_popup() {
+    get_status | dmenu -p "Status"
+}
+
+menu() {
+    status="$(get_status)"
+    printf "Start Pomodoro\nShort Break\nLong Break\nCustom\nPause\nResume\nStop\nStatus\n" \
+        | dmenu -i -p "$status"
+}
+
+# -------- MAIN --------
+choice=$(menu)
+
+case "$choice" in
+    "Start Pomodoro") run_timer 1500 "Pomodoro" ;;
+    "Short Break") run_timer 300 "Break" ;;
+    "Long Break") run_timer 900 "Long Break" ;;
+    "Custom") custom_timer ;;
+    "Pause") pause_timer ;;
+    "Resume") resume_timer ;;
+    "Stop") stop_timer ;;
+    "Status") status_popup ;;
+esac

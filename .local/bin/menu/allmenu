@@ -1,0 +1,67 @@
+#!/bin/sh
+
+menudir="$HOME/.local/bin/menu"
+bindir="$HOME/.local/bin"
+cache="$HOME/.cache/allmenu_last"
+
+mkdir -p "$HOME/.cache"
+
+# --- move last used to top ---
+prioritize_last() {
+    last=$(cat "$cache" 2>/dev/null)
+
+    if [ -n "$last" ]; then
+        printf "%s\n" "$1" | awk -v last="$last" '
+            $0 == last { print; next }
+            { lines[++i] = $0 }
+            END { for (j=1;j<=i;j++) print lines[j] }
+        '
+    else
+        printf "%s\n" "$1"
+    fi
+}
+
+# --- recursive bin browser ---
+browse_bin() {
+    current="$1"
+
+    while true; do
+        dirs=$(find "$current" -maxdepth 1 -type d ! -path "$current" 2>/dev/null | xargs -I{} basename {} | sed 's/$/\//')
+        files=$(find "$current" -maxdepth 1 -type f -executable 2>/dev/null | xargs -I{} basename {})
+
+        list=$(printf "%s\n%s\n" "$dirs" "$files" | sort)
+
+        [ "$current" != "$bindir" ] && list=$(printf "../\n%s" "$list")
+
+        choice=$(printf "%s\n" "$list" | dmenu -i -l 15 -p "bin: $(basename "$current")")
+
+        [ -z "$choice" ] && return
+
+        case "$choice" in
+            ../) current=$(dirname "$current") ;;
+            */) current="$current/${choice%/}" ;;
+            *)
+                echo "$choice" > "$cache"
+                "$current/$choice"
+                return
+                ;;
+        esac
+    done
+}
+
+# --- menu scripts ---
+menus=$(ls -1 "$menudir" 2>/dev/null | grep -vx "allmenu" | sort)
+
+options=$(printf "%s\nbin\n" "$menus")
+options=$(prioritize_last "$options")
+
+choice=$(printf "%s\n" "$options" | dmenu -i -l 10 -p "allmenu:")
+
+[ -z "$choice" ] && exit
+
+if [ "$choice" = "bin" ]; then
+    browse_bin "$bindir"
+else
+    echo "$choice" > "$cache"
+    "$menudir/$choice"
+fi

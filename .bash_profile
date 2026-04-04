@@ -7,7 +7,7 @@ if [ -z "$DISPLAY" ]; then
             ;;
         /dev/tty2)
             # Plasma session on TTY2
-            exec startx ~/.xinitrc.xfce
+            exec startx ~/.xinitrc.plasma
             ;;
         *)
             # Other TTYs do nothing

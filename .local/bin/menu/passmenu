@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# =============================================================
+# pass-dmenu — browse pass entries with dmenu
+# Dependencies: pass, dmenu, xclip
+# Usage: bind this script to a keyboard shortcut in your WM
+# =============================================================
+
+CLIP_SECONDS=45
+PASS_LENGTH=10    # default generated password length
+USER_LENGTH=10    # default generated username length
+
+# helper: random password (letters + digits + symbols)
+gen_password() {
+  tr -dc 'A-Za-z0-9!@#$%^&*()-_=+' < /dev/urandom | head -c "$PASS_LENGTH"
+}
+
+# helper: random username (adjective + noun + number)
+gen_username() {
+  adj=(swift bold bright calm dark fast free glad keen neat odd pure rare rich safe sharp slim sly)
+  noun=(fox owl wolf bear hawk lynx raven crane duck kite)
+  num=$((RANDOM % 9000 + 1000))
+  echo "${adj[$((RANDOM % ${#adj[@]}))]}${noun[$((RANDOM % ${#noun[@]}))]}${num}"
+}
+
+# --- Main menu -----------------------------------------------
+action=$(printf "list\nadd\nremove" | dmenu -i -p "pass:")
+[[ -z "$action" ]] && exit 0
+
+# =============================================================
+# LIST
+# =============================================================
+if [[ "$action" == "list" ]]; then
+
+  entry=$(find "$HOME/.password-store" -name "*.gpg" | \
+    sed "s|$HOME/.password-store/||; s|\.gpg$||" | sort | \
+    dmenu -i -l 20 -p "entry:")
+  [[ -z "$entry" ]] && exit 0
+
+  full=$(pass show "$entry" 2>/dev/null)
+  if [[ -z "$full" ]]; then
+    notify-send "pass" "Could not decrypt '$entry'" --urgency=critical
+    exit 1
+  fi
+
+  password=$(echo "$full" | head -n1)
+  username=$(echo "$full" | grep -i "^username:" | head -n1 | cut -d' ' -f2-)
+
+  menu=""
+  [[ -n "$password" ]] && menu+="password: $password"$'\n'
+  [[ -n "$username" ]] && menu+="username: $username"$'\n'
+
+  selected=$(printf "%s" "$menu" | dmenu -i -p "$entry:")
+  [[ -z "$selected" ]] && exit 0
+
+  label=$(echo "$selected" | cut -d':' -f1)
+  value=$(echo "$selected" | cut -d' ' -f2-)
+
+  if [[ -z "$value" ]]; then
+    notify-send "pass" "Nothing to copy" --urgency=normal
+    exit 1
+  fi
+
+  echo -n "$value" | xclip -selection clipboard
+  notify-send "pass" "$label for '$entry' copied — clears in ${CLIP_SECONDS}s" \
+    --urgency=low --expire-time=3000
+  (sleep "$CLIP_SECONDS" && echo -n "" | xclip -selection clipboard) &
+
+# =============================================================
+# ADD
+# =============================================================
+elif [[ "$action" == "add" ]]; then
+
+  name=$(echo "" | dmenu -i -p "entry name (e.g. bitwarden/Social/twitter):")
+  [[ -z "$name" ]] && exit 0
+
+  # --- Username --------------------------------------------
+  user_choice=$(printf "type username\ngenerate random username\nskip" | \
+    dmenu -i -p "username:")
+  [[ -z "$user_choice" ]] && exit 0
+
+  case "$user_choice" in
+    "type username")
+      username=$(echo "" | dmenu -i -p "username:")
+      ;;
+    "generate random username")
+      username=$(gen_username)
+      notify-send "pass" "Generated username: $username" --urgency=low --expire-time=4000
+      ;;
+    "skip")
+      username=""
+      ;;
+  esac
+
+  # --- Password --------------------------------------------
+  pass_choice=$(printf "type password\ngenerate random password" | \
+    dmenu -i -p "password:")
+  [[ -z "$pass_choice" ]] && exit 0
+
+  case "$pass_choice" in
+    "type password")
+      password=$(echo "" | dmenu -i -p "password:")
+      [[ -z "$password" ]] && exit 0
+      ;;
+    "generate random password")
+      password=$(gen_password)
+      notify-send "pass" "Generated password: $password" --urgency=low --expire-time=4000
+      ;;
+  esac
+
+  # --- Save ------------------------------------------------
+  secret="$password"
+  [[ -n "$username" ]] && secret+=$'\n'"username: $username"
+
+  if echo "$secret" | pass insert --multiline --force "$name" &>/dev/null; then
+    notify-send "pass" "Added '$name'" --urgency=low --expire-time=3000
+  else
+    notify-send "pass" "Failed to add '$name'" --urgency=critical
+  fi
+
+# =============================================================
+# REMOVE
+# =============================================================
+elif [[ "$action" == "remove" ]]; then
+
+  entry=$(find "$HOME/.password-store" -name "*.gpg" | \
+    sed "s|$HOME/.password-store/||; s|\.gpg$||" | sort | \
+    dmenu -i -l 20 -p "remove entry:")
+  [[ -z "$entry" ]] && exit 0
+
+  confirm=$(printf "no\nyes" | dmenu -i -p "delete '$entry'?")
+  [[ "$confirm" != "yes" ]] && exit 0
+
+  if pass rm --force "$entry" &>/dev/null; then
+    notify-send "pass" "Removed '$entry'" --urgency=low --expire-time=3000
+  else
+    notify-send "pass" "Failed to remove '$entry'" --urgency=critical
+  fi
+
+fi

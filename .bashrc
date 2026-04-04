@@ -41,7 +41,8 @@ alias soundr="systemctl --user restart pipewire.service"
 alias dots='git --git-dir=$HOME/dotfiles --work-tree=$HOME'
 alias tmux='tmux -f ~/.config/tmux/tmux.conf'
 alias musicr='systemctl --user restart mpd && mpc update --wait && pkill ncmpcpp 2>/dev/null; ncmpcpp'
-
+alias vim='nvim'
+alias suu="sudo apt update && sudo apt upgrade"
 # If not running interactively, don't do anything
 case $- in
     *i*) ;;
@@ -159,3 +160,4 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 
 
 
+export PASSWORD_STORE_ENABLE_EXTENSIONS=true
