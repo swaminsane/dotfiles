@@ -1,0 +1,59 @@
+# --- Paths ---
+RADIO_FILE="$HOME/.local/share/music-menu/radio_stations"
+YT_FILE="$HOME/.local/share/music-menu/yt_stations"
+RADIO_PID_FILE="/tmp/radio.pid"
+YT_PID_FILE="/tmp/yt_mpv.pid"
+RADIO_SOCKET="/tmp/radio_mpv.sock"
+YT_SOCKET="/tmp/yt_mpv.sock"
+SCRIPTS_DIR="$HOME/.local/bin/menu/music"
+
+# --- Ensure files exist ---
+mkdir -p "$HOME/.local/share/music-menu"
+[ -f "$RADIO_FILE" ] || touch "$RADIO_FILE"
+[ -f "$YT_FILE" ]    || touch "$YT_FILE"
+
+# --- Helpers ---
+is_running() {
+    local pidfile="$1"
+    [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+
+kill_pid_file() {
+    local pidfile="$1"
+    if [ -f "$pidfile" ]; then
+        kill "$(cat "$pidfile")" 2>/dev/null
+        rm -f "$pidfile"
+    fi
+}
+
+mpv_pause_toggle() {
+    local socket="$1"
+    echo '{"command":["cycle","pause"]}' | socat - "$socket" 2>/dev/null
+}
+
+stop_all_external() {
+    kill_pid_file "$YT_PID_FILE"
+    kill_pid_file "$RADIO_PID_FILE"
+}
+
+get_status() {
+    if is_running "$YT_PID_FILE"; then
+        echo "YouTube playing"
+    elif is_running "$RADIO_PID_FILE"; then
+        echo "Radio playing"
+    else
+        /usr/bin/mpc status 2>/dev/null | head -n1 | cat || echo "MPD idle"
+    fi
+}
+
+smart_play_pause() {
+    if is_running "$YT_PID_FILE"; then
+        mpv_pause_toggle "$YT_SOCKET"
+        notify-send "YouTube" "Play/Pause toggled"
+    elif is_running "$RADIO_PID_FILE"; then
+        mpv_pause_toggle "$RADIO_SOCKET"
+        notify-send "Radio" "Play/Pause toggled"
+    else
+        /usr/bin/mpc toggle 2>/dev/null
+    fi
+}

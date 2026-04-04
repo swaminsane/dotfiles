@@ -1,0 +1,84 @@
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+yt_status=""
+is_running "$YT_PID_FILE" && yt_status=" [PLAYING]"
+
+choice=$(printf "Play Saved\nPlay URL Now\nStop\nSave URL\nRemove Saved\nList Saved" | \
+    dmenu -l 10 -p "YouTube$yt_status")
+
+case "$choice" in
+    "Play Saved")
+        if [ ! -s "$YT_FILE" ]; then
+            notify-send "YouTube" "No saved URLs yet."
+            exit
+        fi
+        entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
+            dmenu -l 20 -p "Select to play")
+        [ -z "$entry" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$entry$" "$YT_FILE" | tail -n1)
+        if [ -n "$url" ]; then
+            kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$RADIO_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+            notify-send "YouTube" "Fetching: $entry..."
+            mpv --no-video --really-quiet \
+                --ytdl-format="bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                "$url" &
+            echo $! > "$YT_PID_FILE"
+        fi
+        ;;
+    "Play URL Now")
+        url=$(echo "" | dmenu -p "Paste URL")
+        [ -z "$url" ] && exit
+        kill_pid_file "$YT_PID_FILE"
+        kill_pid_file "$RADIO_PID_FILE"
+        /usr/bin/mpc pause 2>/dev/null
+        notify-send "YouTube" "Fetching stream..."
+        mpv --no-video --really-quiet \
+            --ytdl-format="bestaudio" \
+            --input-ipc-server="$YT_SOCKET" \
+            "$url" &
+        echo $! > "$YT_PID_FILE"
+        ;;
+    "Stop")
+        if is_running "$YT_PID_FILE"; then
+            kill_pid_file "$YT_PID_FILE"
+            notify-send "YouTube" "Stopped."
+        else
+            notify-send "YouTube" "Nothing is playing."
+        fi
+        ;;
+    "Save URL")
+        url=$(echo "" | dmenu -p "Paste URL to save")
+        [ -z "$url" ] && exit
+        name=$(echo "" | dmenu -p "Enter a name for it")
+        [ -z "$name" ] && exit
+        if grep -q "^#EXTINF:-1,$name$" "$YT_FILE"; then
+            notify-send "YouTube" "'$name' already exists."
+            exit
+        fi
+        printf "#EXTINF:-1,%s\n%s\n" "$name" "$url" >> "$YT_FILE"
+        notify-send "YouTube" "Saved: $name"
+        ;;
+    "Remove Saved")
+        if [ ! -s "$YT_FILE" ]; then
+            notify-send "YouTube" "No saved URLs yet."
+            exit
+        fi
+        entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
+            dmenu -l 20 -p "Remove which?")
+        [ -z "$entry" ] && exit
+        sed -i "/^#EXTINF:-1,$entry$/{N;d;}" "$YT_FILE"
+        notify-send "YouTube" "Removed: $entry"
+        ;;
+    "List Saved")
+        if [ ! -s "$YT_FILE" ]; then
+            notify-send "YouTube" "No saved URLs yet."
+            exit
+        fi
+        notify-send "YouTube Saved" "$(grep "^#EXTINF" "$YT_FILE" | \
+            sed 's/#EXTINF:-1,//' | nl -ba)"
+        ;;
+esac

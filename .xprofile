@@ -8,8 +8,8 @@ setxkbmap -option caps:escape &
 
 # Only run these in dwm
 if [ "$WM" = "dwm" ]; then
-    pidof dwmblocks >/dev/null || dwmblocks &
-    pidof xsct >/dev/null || xsct 4200 &
+    dwmblocks &
+    xsct 4200 &
     dunst &
     picom &
     feh --bg-fill --randomize $HOME/.local/share/wallpapers/

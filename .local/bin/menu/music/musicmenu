@@ -1,0 +1,37 @@
+#!/bin/bash
+SCRIPTS_DIR="$HOME/.local/bin/menu/music"
+source "$SCRIPTS_DIR/lib/common"
+
+status="$(get_status)"
+
+choice=$(printf "Play/Pause\nNext\nPrevious\nMPC\nRadio\nYouTube" | \
+    dmenu -l 10 -p "Music | $status")
+
+case "$choice" in
+    "Play/Pause")
+        smart_play_pause
+        ;;
+    "Next")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Next only works for MPC"
+        else
+            /usr/bin/mpc next
+        fi
+        ;;
+    "Previous")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Previous only works for MPC"
+        else
+            /usr/bin/mpc prev
+        fi
+        ;;
+    "MPC")
+        bash "$SCRIPTS_DIR/lib/mpcmenu"
+        ;;
+    "Radio")
+        bash "$SCRIPTS_DIR/lib/radiomenu"
+        ;;
+    "YouTube")
+        bash "$SCRIPTS_DIR/lib/ytmenu"
+        ;;
+esac

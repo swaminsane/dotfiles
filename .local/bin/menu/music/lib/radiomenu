@@ -1,0 +1,70 @@
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+radio_status=""
+is_running "$RADIO_PID_FILE" && radio_status=" [LIVE]"
+
+choice=$(printf "Play Station\nStop Radio\nAdd Station\nRemove Station\nList Stations" | \
+    dmenu -l 10 -p "Radio$radio_status")
+
+case "$choice" in
+    "Play Station")
+        if [ ! -s "$RADIO_FILE" ]; then
+            notify-send "Radio" "No stations saved yet."
+            exit
+        fi
+        station=$(grep "^#EXTINF" "$RADIO_FILE" | sed 's/#EXTINF:-1,//' | \
+            dmenu -l 20 -p "Select station")
+        [ -z "$station" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$station$" "$RADIO_FILE" | tail -n1)
+        if [ -n "$url" ]; then
+            kill_pid_file "$RADIO_PID_FILE"
+            kill_pid_file "$YT_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+            mpv --no-video --really-quiet \
+                --input-ipc-server="$RADIO_SOCKET" \
+                "$url" &
+            echo $! > "$RADIO_PID_FILE"
+            notify-send "Radio" "Now playing: $station"
+        fi
+        ;;
+    "Stop Radio")
+        if is_running "$RADIO_PID_FILE"; then
+            kill_pid_file "$RADIO_PID_FILE"
+            notify-send "Radio" "Stopped."
+        else
+            notify-send "Radio" "Nothing is playing."
+        fi
+        ;;
+    "Add Station")
+        url=$(echo "" | dmenu -p "Enter stream URL")
+        [ -z "$url" ] && exit
+        name=$(echo "" | dmenu -p "Enter station name")
+        [ -z "$name" ] && exit
+        if grep -q "^#EXTINF:-1,$name$" "$RADIO_FILE"; then
+            notify-send "Radio" "Station '$name' already exists."
+            exit
+        fi
+        printf "#EXTINF:-1,%s\n%s\n" "$name" "$url" >> "$RADIO_FILE"
+        notify-send "Radio" "Added: $name"
+        ;;
+    "Remove Station")
+        if [ ! -s "$RADIO_FILE" ]; then
+            notify-send "Radio" "No stations saved yet."
+            exit
+        fi
+        station=$(grep "^#EXTINF" "$RADIO_FILE" | sed 's/#EXTINF:-1,//' | \
+            dmenu -l 20 -p "Remove which?")
+        [ -z "$station" ] && exit
+        sed -i "/^#EXTINF:-1,$station$/{N;d;}" "$RADIO_FILE"
+        notify-send "Radio" "Removed: $station"
+        ;;
+    "List Stations")
+        if [ ! -s "$RADIO_FILE" ]; then
+            notify-send "Radio" "No stations saved yet."
+            exit
+        fi
+        notify-send "Radio Stations" "$(grep "^#EXTINF" "$RADIO_FILE" | \
+            sed 's/#EXTINF:-1,//' | nl -ba)"
+        ;;
+esac

@@ -1,0 +1,37 @@
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+choice=$(printf "Select Song\nAdd to Queue\nOpen ncmpcpp\nUpdate Library\nStart MPD\nStop MPD" | \
+    dmenu -l 10 -p "MPC")
+
+case "$choice" in
+    "Select Song")
+        song=$(/usr/bin/mpc listall | dmenu -l 20 -p "Play song")
+        if [ -n "$song" ]; then
+            stop_all_external
+            /usr/bin/mpc clear
+            /usr/bin/mpc add "$song"
+            /usr/bin/mpc play
+        fi
+        ;;
+    "Add to Queue")
+        song=$(/usr/bin/mpc listall | dmenu -l 20 -p "Add to queue")
+        [ -n "$song" ] && /usr/bin/mpc add "$song"
+        ;;
+    "Open ncmpcpp")
+        st -e ncmpcpp
+        ;;
+    "Update Library")
+        /usr/bin/mpc update
+        pkill ncmpcpp 2>/dev/null
+        notify-send "MPD" "Library updated"
+        ;;
+    "Start MPD")
+        systemctl --user start mpd
+        notify-send "MPD" "MPD started"
+        ;;
+    "Stop MPD")
+        systemctl --user stop mpd
+        notify-send "MPD" "MPD stopped"
+        ;;
+esac
