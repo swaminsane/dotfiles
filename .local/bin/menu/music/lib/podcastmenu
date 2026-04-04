@@ -1,0 +1,787 @@
+#!/bin/bash
+# podcastmenu — dmenu-based podcast manager
+# Integrates with mpcmenu/radiomenu/ytmenu via common lib
+source "$HOME/.local/bin/menu/music/lib/common"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+PODCAST_DIR="$HOME/.local/share/music-menu/podcasts"
+FEEDS_FILE="$PODCAST_DIR/feeds"         # name \t url  (one feed per line)
+PLAYED_FILE="$PODCAST_DIR/played"       # one episode URL per line
+HISTORY_FILE="$PODCAST_DIR/history"     # M3U-style, newest first
+QUEUE_FILE="$PODCAST_DIR/queue"         # title \t url
+POSITIONS_FILE="$PODCAST_DIR/positions" # url \t seconds
+DOWNLOAD_LOG="$PODCAST_DIR/download_log"
+CACHE_DIR="$PODCAST_DIR/cache"          # per-feed episode lists
+SETTINGS_FILE="$PODCAST_DIR/settings"
+
+PODCAST_PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/podcast.pid"
+PODCAST_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/podcast.sock"
+
+mkdir -p "$PODCAST_DIR" "$CACHE_DIR"
+for _f in "$FEEDS_FILE" "$PLAYED_FILE" "$HISTORY_FILE" \
+           "$QUEUE_FILE" "$POSITIONS_FILE" "$DOWNLOAD_LOG"; do
+    [ -f "$_f" ] || touch "$_f"
+done
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+load_settings() {
+    DOWNLOAD_DIR="$HOME/Music/Podcasts"
+    PLAYBACK_SPEED="1.0"
+    SKIP_SILENCE="no"
+    CACHE_TTL=60          # minutes before a cached feed is considered stale
+    EPISODE_COUNT=20      # max episodes fetched per feed
+    [ -f "$SETTINGS_FILE" ] && source "$SETTINGS_FILE"
+    mkdir -p "$DOWNLOAD_DIR"
+}
+
+save_setting() {
+    local key="$1" val="$2"
+    touch "$SETTINGS_FILE"
+    if grep -q "^${key}=" "$SETTINGS_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$SETTINGS_FILE"
+    else
+        echo "${key}=\"${val}\"" >> "$SETTINGS_FILE"
+    fi
+}
+
+load_settings
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+# Escape string for use as a grep basic-regex pattern
+escape_for_grep() {
+    printf '%s' "$1" | sed 's/[[\.*^$()+?{}|]/\\&/g'
+}
+
+# Format integer seconds → H:MM:SS
+format_duration() {
+    local s="${1%.*}"
+    printf '%d:%02d:%02d' $((s/3600)) $((s%3600/60)) $((s%60))
+}
+
+# Derive a stable cache filename from a feed URL
+cache_path() {
+    printf '%s' "$1" | md5sum | cut -d' ' -f1
+    # prints just the hash; caller prepends $CACHE_DIR/
+}
+
+add_to_history() {
+    local title="$1" url="$2"
+    sed -i "/^#EXTINF:-1,$(escape_for_grep "$title")$/{N;d;}" "$HISTORY_FILE"
+    printf "#EXTINF:-1,%s\n%s\n" "$title" "$url" | \
+        cat - "$HISTORY_FILE" > /tmp/podcast_hist_tmp && \
+        mv /tmp/podcast_hist_tmp "$HISTORY_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# mpv IPC helpers (require socat; degrade gracefully without it)
+# ---------------------------------------------------------------------------
+
+_ipc() {
+    # Send a JSON command to the podcast mpv socket, return raw response
+    command -v socat &>/dev/null || return 1
+    is_running "$PODCAST_PID_FILE" || return 1
+    printf '%s\n' "$1" | socat - "$PODCAST_SOCKET" 2>/dev/null
+}
+
+get_mpv_property() {
+    # get_mpv_property <property>  →  prints value or empty
+    local resp
+    resp=$(_ipc "{\"command\":[\"get_property\",\"$1\"]}") || return
+    printf '%s' "$resp" | grep -o '"data":[^,}]*' | cut -d: -f2 | tr -d '"'
+}
+
+set_mpv_property() {
+    # set_mpv_property <property> <value>
+    _ipc "{\"command\":[\"set_property\",\"$1\",$2]}" > /dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Resume-position persistence
+# ---------------------------------------------------------------------------
+
+save_position() {
+    # Query mpv for the current playback position and URL, then persist them.
+    # Called before stopping or switching tracks.
+    is_running "$PODCAST_PID_FILE" || return
+    local pos url
+    pos=$( get_mpv_property "time-pos") || return
+    url=$(get_mpv_property "path")      || return
+    [[ -z "$pos" || -z "$url" ]] && return
+
+    local pat
+    pat=$(escape_for_grep "$url")
+    if grep -q "^${pat}	" "$POSITIONS_FILE"; then
+        sed -i "s|^${pat}	.*|${url}	${pos}|" "$POSITIONS_FILE"
+    else
+        printf '%s\t%s\n' "$url" "$pos" >> "$POSITIONS_FILE"
+    fi
+}
+
+get_saved_position() {
+    grep "^$(escape_for_grep "$1")	" "$POSITIONS_FILE" | \
+        cut -d$'\t' -f2 | head -n1
+}
+
+clear_position() {
+    sed -i "/^$(escape_for_grep "$1")	/d" "$POSITIONS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Playback
+# ---------------------------------------------------------------------------
+
+play_episode() {
+    local url="$1" title="$2"
+
+    save_position   # save where the previous episode was up to
+
+    kill_pid_file "$PODCAST_PID_FILE"
+    kill_pid_file "$YT_PID_FILE"
+    kill_pid_file "$RADIO_PID_FILE"
+    /usr/bin/mpc pause 2>/dev/null
+
+    local -a mpv_args=(
+        --no-video
+        --really-quiet
+        --speed="$PLAYBACK_SPEED"
+        --input-ipc-server="$PODCAST_SOCKET"
+    )
+
+    if [ "$SKIP_SILENCE" = "yes" ]; then
+        mpv_args+=(--af=silencedetect,scaletempo=speed=pitch)
+    fi
+
+    # Resume prompt
+    local saved_pos
+    saved_pos=$(get_saved_position "$url")
+    if [[ -n "$saved_pos" && "${saved_pos%.*}" -gt 10 ]]; then
+        local resume
+        resume=$(printf "Resume from %s\nStart from beginning" \
+            "$(format_duration "$saved_pos")" | \
+            dmenu -i -l 2 -p "$title")
+        [ -z "$resume" ] && return
+        if [[ "$resume" == "Start from beginning" ]]; then
+            clear_position "$url"
+            saved_pos=""
+        fi
+    fi
+    [[ -n "$saved_pos" ]] && mpv_args+=(--start="$saved_pos")
+
+    mpv "${mpv_args[@]}" "$url" &
+    echo $! > "$PODCAST_PID_FILE"
+
+    add_to_history "$title" "$url"
+    echo "$url" >> "$PLAYED_FILE"   # mark played on first listen
+    notify-send "Podcast" "▶ $title"
+}
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+download_episode() {
+    local url="$1" title="$2" format="$3" outdir="${4:-$DOWNLOAD_DIR}"
+    mkdir -p "$outdir"
+
+    local -a dl_args
+    case "$format" in
+        "MP3")      dl_args=(--extract-audio --audio-format mp3  --audio-quality 0) ;;
+        "FLAC")     dl_args=(--extract-audio --audio-format flac) ;;
+        "Opus")     dl_args=(--extract-audio --audio-format opus) ;;
+        "Original") dl_args=() ;;
+        *)          dl_args=(--extract-audio --audio-quality 0) ;;
+    esac
+
+    notify-send "Podcast" "Downloading: $title"
+    yt-dlp "${dl_args[@]}" \
+        --embed-thumbnail \
+        --embed-metadata \
+        --output "$outdir/%(playlist_title)s/%(title)s.%(ext)s" \
+        "$url" > /tmp/podcast_dl_out 2>&1
+
+    if [ $? -eq 0 ]; then
+        notify-send "Podcast" "Done: $title"
+        echo "$url" >> "$PLAYED_FILE"
+        printf "%s\t%s\t%s\n" \
+            "$(date '+%Y-%m-%d %H:%M')" "$title" "$url" >> "$DOWNLOAD_LOG"
+    else
+        notify-send "Podcast" "Failed: $title"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Feed fetching & caching
+# ---------------------------------------------------------------------------
+
+# Fetch episode list for a feed, using on-disk cache when fresh.
+# Prints tab-separated lines: title \t url \t duration_string \t upload_date
+fetch_episodes() {
+    local feed_url="$1" feed_name="$2"
+    local cache_file="$CACHE_DIR/$(cache_path "$feed_url")"
+
+    if [ -f "$cache_file" ] && [ -s "$cache_file" ]; then
+        local age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
+        if [ "$age" -lt $(( CACHE_TTL * 60 )) ]; then
+            cat "$cache_file"
+            return
+        fi
+    fi
+
+    notify-send "Podcast" "Fetching: $feed_name…"
+    yt-dlp --flat-playlist \
+        --playlist-end "$EPISODE_COUNT" \
+        --print "%(title)s	%(url)s	%(duration_string)s	%(upload_date)s" \
+        "$feed_url" 2>/dev/null | tee "$cache_file"
+}
+
+# Force-refresh a single feed's cache in the background
+refresh_feed_cache() {
+    local feed_url="$1" feed_name="$2"
+    local cache_file="$CACHE_DIR/$(cache_path "$feed_url")"
+    (
+        yt-dlp --flat-playlist \
+            --playlist-end "$EPISODE_COUNT" \
+            --print "%(title)s	%(url)s	%(duration_string)s	%(upload_date)s" \
+            "$feed_url" 2>/dev/null > "$cache_file"
+        notify-send "Podcast" "Updated: $feed_name"
+    ) &
+}
+
+# ---------------------------------------------------------------------------
+# Episode action submenu
+# ---------------------------------------------------------------------------
+episode_action() {
+    local url="$1" title="$2" duration="$3"
+
+    # Build dynamic option list
+    local saved_pos
+    saved_pos=$(get_saved_position "$url")
+
+    local opts=""
+    [[ -n "$saved_pos" && "${saved_pos%.*}" -gt 10 ]] && \
+        opts+="Resume from $(format_duration "$saved_pos")\n"
+    opts+="Play\nDownload\nAdd to Queue"
+    grep -qF "$url" "$QUEUE_FILE" && opts+="\nRemove from Queue"
+    if grep -qF "$url" "$PLAYED_FILE"; then
+        opts+="\nMark as Unplayed"
+    else
+        opts+="\nMark as Played"
+    fi
+    opts+="\nCopy URL"
+
+    local label="$title"
+    [ -n "$duration" ] && label="$title  [$duration]"
+
+    local choice
+    choice=$(printf "$opts" | dmenu -i -l 10 -p "$label")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Resume"*)
+            play_episode "$url" "$title"
+            ;;
+        "Play")
+            clear_position "$url"
+            play_episode "$url" "$title"
+            ;;
+        "Download")
+            local format
+            format=$(printf "MP3\nFLAC\nOpus\nOriginal" | \
+                dmenu -i -l 4 -p "Format")
+            [ -z "$format" ] && return
+            ( download_episode "$url" "$title" "$format" ) &
+            ;;
+        "Add to Queue")
+            printf '%s\t%s\n' "$title" "$url" >> "$QUEUE_FILE"
+            notify-send "Podcast" "Queued: $title"
+            ;;
+        "Remove from Queue")
+            grep -v "	$(escape_for_grep "$url")$" "$QUEUE_FILE" \
+                > /tmp/podcast_queue_tmp && \
+                mv /tmp/podcast_queue_tmp "$QUEUE_FILE"
+            notify-send "Podcast" "Removed from queue"
+            ;;
+        "Mark as Played")
+            echo "$url" >> "$PLAYED_FILE"
+            notify-send "Podcast" "Marked played"
+            ;;
+        "Mark as Unplayed")
+            grep -vF "$url" "$PLAYED_FILE" > /tmp/podcast_played_tmp && \
+                mv /tmp/podcast_played_tmp "$PLAYED_FILE"
+            notify-send "Podcast" "Marked unplayed"
+            ;;
+        "Copy URL")
+            printf '%s' "$url" | xclip -selection clipboard
+            notify-send "Podcast" "URL copied"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Feed browser
+# ---------------------------------------------------------------------------
+browse_feed() {
+    local feed_name="$1" feed_url="$2"
+
+    local episodes
+    episodes=$(fetch_episodes "$feed_url" "$feed_name")
+    [ -z "$episodes" ] && \
+        notify-send "Podcast" "No episodes found." && return
+
+    # Build display lines with played marker ✓, padded columns
+    local display=""
+    local idx=0
+    while IFS=$'\t' read -r ep_title ep_url ep_dur ep_date; do
+        (( idx++ ))
+        local mark="  "
+        grep -qF "$ep_url" "$PLAYED_FILE" 2>/dev/null && mark="✓ "
+
+        # Format date YYYYMMDD → YYYY-MM-DD
+        local date_fmt="$ep_date"
+        [ "${#ep_date}" -eq 8 ] && \
+            date_fmt="${ep_date:0:4}-${ep_date:4:2}-${ep_date:6:2}"
+
+        display+=$(printf "%2d. %s%-50s %-9s %s" \
+            "$idx" "$mark" "$ep_title" "$ep_dur" "$date_fmt")
+        display+=$'\n'
+    done <<< "$episodes"
+
+    local selected
+    selected=$(printf '%s' "$display" | \
+        dmenu -i -l 20 -p "$feed_name (↑↓ browse  Enter: action)")
+    [ -z "$selected" ] && return
+
+    # Parse leading index — always the first token, followed by '.'
+    local raw_idx
+    raw_idx=$(printf '%s' "$selected" | awk '{print $1}' | tr -d '.')
+    [[ ! "$raw_idx" =~ ^[0-9]+$ ]] && return
+
+    local ep_title ep_url ep_dur
+    ep_title=$(printf '%s' "$episodes" | awk -F'\t' "NR==$raw_idx {print \$1}")
+    ep_url=$(printf '%s'   "$episodes" | awk -F'\t' "NR==$raw_idx {print \$2}")
+    ep_dur=$(printf '%s'   "$episodes" | awk -F'\t' "NR==$raw_idx {print \$3}")
+
+    episode_action "$ep_url" "$ep_title" "$ep_dur"
+}
+
+# ---------------------------------------------------------------------------
+# Queue
+# ---------------------------------------------------------------------------
+queue_menu() {
+    local count
+    count=$(grep -c . "$QUEUE_FILE" 2>/dev/null || echo 0)
+
+    if [ "$count" -eq 0 ]; then
+        notify-send "Podcast" "Queue is empty."
+        return
+    fi
+
+    local titles
+    titles=$(awk -F'\t' '{print $1}' "$QUEUE_FILE")
+
+    local selected
+    selected=$(printf "▶ Play All (%s episodes)\n%s\nClear Queue" \
+        "$count" "$titles" | \
+        dmenu -i -l 20 -p "Queue")
+    [ -z "$selected" ] && return
+
+    case "$selected" in
+        "▶ Play All"*)
+            local pl_file="/tmp/podcast_queue.m3u"
+            awk -F'\t' '{print $2}' "$QUEUE_FILE" > "$pl_file"
+            save_position
+            kill_pid_file "$PODCAST_PID_FILE"
+            kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$RADIO_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+            mpv --no-video --really-quiet \
+                --speed="$PLAYBACK_SPEED" \
+                --input-ipc-server="$PODCAST_SOCKET" \
+                --playlist="$pl_file" &
+            echo $! > "$PODCAST_PID_FILE"
+            notify-send "Podcast" "Playing queue ($count episodes)"
+            ;;
+        "Clear Queue")
+            > "$QUEUE_FILE"
+            notify-send "Podcast" "Queue cleared."
+            ;;
+        *)
+            local ep_url ep_title
+            ep_title="$selected"
+            ep_url=$(grep "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" | \
+                awk -F'\t' '{print $2}' | head -n1)
+            [ -z "$ep_url" ] && return
+
+            local action
+            action=$(printf "Play\nRemove from Queue\nMove to Top" | \
+                dmenu -i -l 3 -p "$ep_title")
+            case "$action" in
+                "Play")
+                    play_episode "$ep_url" "$ep_title"
+                    ;;
+                "Remove from Queue")
+                    grep -v "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" \
+                        > /tmp/podcast_queue_tmp && \
+                        mv /tmp/podcast_queue_tmp "$QUEUE_FILE"
+                    notify-send "Podcast" "Removed from queue"
+                    ;;
+                "Move to Top")
+                    local entry
+                    entry=$(grep "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" | head -n1)
+                    grep -v "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" \
+                        > /tmp/podcast_queue_tmp
+                    { printf '%s\n' "$entry"; cat /tmp/podcast_queue_tmp; } > "$QUEUE_FILE"
+                    notify-send "Podcast" "Moved to top"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Episode search across cached feeds
+# ---------------------------------------------------------------------------
+search_episodes() {
+    local query
+    query=$(echo "" | dmenu -p "Search episodes (cached feeds only)")
+    [ -z "$query" ] && return
+
+    # Collect matching lines from all caches, tag with feed name
+    local all_results=""
+    while IFS=$'\t' read -r feed_name feed_url; do
+        local cache_file="$CACHE_DIR/$(cache_path "$feed_url")"
+        [ -f "$cache_file" ] || continue
+        local matches
+        matches=$(grep -i "$query" "$cache_file" | \
+            awk -F'\t' -v fn="$feed_name" '{print $0 "\t" fn}')
+        [ -n "$matches" ] && all_results+="$matches"$'\n'
+    done < "$FEEDS_FILE"
+
+    if [ -z "$all_results" ]; then
+        notify-send "Podcast" "No cached results for: $query"$'\n'"(Try updating feeds first)"
+        return
+    fi
+
+    # Display: index  [Feed Name]  Episode Title  Duration
+    local display=""
+    local idx=0
+    while IFS=$'\t' read -r ep_title ep_url ep_dur ep_date feed_name; do
+        [ -z "$ep_url" ] && continue
+        (( idx++ ))
+        display+=$(printf "%2d. [%-18s] %-42s %s" \
+            "$idx" "$feed_name" "$ep_title" "$ep_dur")
+        display+=$'\n'
+    done <<< "$all_results"
+
+    local selected
+    selected=$(printf '%s' "$display" | dmenu -i -l 20 -p "Results: $query")
+    [ -z "$selected" ] && return
+
+    local raw_idx
+    raw_idx=$(printf '%s' "$selected" | awk '{print $1}' | tr -d '.')
+    [[ ! "$raw_idx" =~ ^[0-9]+$ ]] && return
+
+    local ep_title ep_url ep_dur
+    ep_title=$(printf '%s' "$all_results" | awk -F'\t' "NR==$raw_idx {print \$1}")
+    ep_url=$(printf '%s'   "$all_results" | awk -F'\t' "NR==$raw_idx {print \$2}")
+    ep_dur=$(printf '%s'   "$all_results" | awk -F'\t' "NR==$raw_idx {print \$3}")
+
+    episode_action "$ep_url" "$ep_title" "$ep_dur"
+}
+
+# ---------------------------------------------------------------------------
+# Subscriptions
+# ---------------------------------------------------------------------------
+
+add_feed() {
+    local url
+    url=$(echo "" | dmenu -p "Feed URL (RSS, Atom, or podcast page)")
+    [ -z "$url" ] && return
+
+    if grep -qF "$url" "$FEEDS_FILE" 2>/dev/null; then
+        notify-send "Podcast" "Already subscribed."
+        return
+    fi
+
+    notify-send "Podcast" "Fetching feed info…"
+
+    # Try yt-dlp for the playlist/channel title
+    local name
+    name=$(yt-dlp --flat-playlist --playlist-end 1 \
+        --print "%(playlist_title)s" "$url" 2>/dev/null | \
+        grep -v '^$' | head -n1)
+
+    # Fallback: parse RSS <channel><title> directly
+    if [ -z "$name" ]; then
+        name=$(curl -s --max-time 10 "$url" | \
+            awk '
+                /<title>/ {
+                    gsub(/<\/?title>|<!\[CDATA\[|\]\]>/, "")
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+                    print; exit
+                }')
+    fi
+
+    # Last resort: ask the user
+    if [ -z "$name" ]; then
+        name=$(echo "" | dmenu -p "Feed name (could not auto-detect)")
+        [ -z "$name" ] && return
+    fi
+
+    printf '%s\t%s\n' "$name" "$url" >> "$FEEDS_FILE"
+    notify-send "Podcast" "Subscribed: $name"
+
+    # Offer to pre-cache episodes
+    local fetch
+    fetch=$(printf "Yes\nNo" | dmenu -i -l 2 -p "Fetch episodes now?")
+    [ "$fetch" = "Yes" ] && refresh_feed_cache "$url" "$name"
+}
+
+remove_feed() {
+    [ ! -s "$FEEDS_FILE" ] && notify-send "Podcast" "No feeds." && return
+
+    local feed_name
+    feed_name=$(awk -F'\t' '{print $1}' "$FEEDS_FILE" | \
+        dmenu -i -l 20 -p "Remove which feed?")
+    [ -z "$feed_name" ] && return
+
+    local feed_url
+    feed_url=$(grep "^$(escape_for_grep "$feed_name")	" "$FEEDS_FILE" | \
+        awk -F'\t' '{print $2}' | head -n1)
+
+    grep -v "^$(escape_for_grep "$feed_name")	" "$FEEDS_FILE" \
+        > /tmp/podcast_feeds_tmp && mv /tmp/podcast_feeds_tmp "$FEEDS_FILE"
+
+    [ -n "$feed_url" ] && \
+        rm -f "$CACHE_DIR/$(cache_path "$feed_url")"
+
+    notify-send "Podcast" "Removed: $feed_name"
+}
+
+import_opml() {
+    local file
+    file=$(echo "" | dmenu -p "OPML file path (tab-complete won't work here)")
+    [ -z "$file" ] && return
+    [ -f "$file" ] || { notify-send "Podcast" "File not found: $file"; return; }
+
+    local count=0
+    while IFS= read -r line; do
+        local url name
+        url=$(printf '%s' "$line" | grep -o 'xmlUrl="[^"]*"' | \
+            sed 's/xmlUrl="//;s/"//')
+        name=$(printf '%s' "$line" | grep -o 'text="[^"]*"' | head -n1 | \
+            sed 's/text="//;s/"//')
+        [ -z "$url" ] && continue
+        [ -z "$name" ] && name="$url"
+        if ! grep -qF "$url" "$FEEDS_FILE"; then
+            printf '%s\t%s\n' "$name" "$url" >> "$FEEDS_FILE"
+            (( count++ ))
+        fi
+    done < "$file"
+
+    notify-send "Podcast" "Imported $count new feeds from OPML."
+}
+
+update_all_feeds() {
+    local count
+    count=$(grep -c . "$FEEDS_FILE" 2>/dev/null || echo 0)
+    [ "$count" -eq 0 ] && notify-send "Podcast" "No feeds subscribed." && return
+    notify-send "Podcast" "Updating $count feeds in background…"
+    (
+        local done=0
+        while IFS=$'\t' read -r feed_name feed_url; do
+            yt-dlp --flat-playlist \
+                --playlist-end "$EPISODE_COUNT" \
+                --print "%(title)s	%(url)s	%(duration_string)s	%(upload_date)s" \
+                "$feed_url" 2>/dev/null \
+                > "$CACHE_DIR/$(cache_path "$feed_url")"
+            (( done++ ))
+        done < "$FEEDS_FILE"
+        notify-send "Podcast" "All $done feeds updated."
+    ) &
+}
+
+subscriptions_menu() {
+    local count
+    count=$(grep -c . "$FEEDS_FILE" 2>/dev/null || echo 0)
+
+    local choice
+    choice=$(printf "Add Feed\nImport OPML\nRemove Feed\nUpdate All Feeds\nList (%s feeds)" \
+        "$count" | \
+        dmenu -i -l 6 -p "Subscriptions")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Add Feed")        add_feed ;;
+        "Import OPML")     import_opml ;;
+        "Remove Feed")     remove_feed ;;
+        "Update All"*)     update_all_feeds ;;
+        "List"*)
+            [ "$count" -eq 0 ] && notify-send "Podcast" "No feeds yet." && return
+            local sel_name
+            sel_name=$(awk -F'\t' '{print $1}' "$FEEDS_FILE" | \
+                dmenu -i -l 20 -p "Feeds — pick to browse")
+            [ -z "$sel_name" ] && return
+            local sel_url
+            sel_url=$(grep "^$(escape_for_grep "$sel_name")	" "$FEEDS_FILE" | \
+                awk -F'\t' '{print $2}')
+            [ -n "$sel_url" ] && browse_feed "$sel_name" "$sel_url"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Speed control (adjusts live via IPC, persists setting)
+# ---------------------------------------------------------------------------
+speed_control() {
+    local current="$PLAYBACK_SPEED"
+    # Read live speed if mpv is running
+    local live_speed
+    live_speed=$(get_mpv_property "speed") && current="$live_speed"
+
+    local val
+    val=$(printf "0.75\n1.0\n1.25\n1.5\n1.75\n2.0\n2.5" | \
+        dmenu -i -l 7 -p "Speed (current: ${current}x)")
+    [ -z "$val" ] && return
+
+    save_setting "PLAYBACK_SPEED" "$val"
+    PLAYBACK_SPEED="$val"
+
+    # Apply immediately to the running instance
+    set_mpv_property "speed" "$val"
+    notify-send "Podcast" "Speed: ${val}x"
+}
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+settings_menu() {
+    local choice
+    choice=$(printf \
+"Playback Speed  [${PLAYBACK_SPEED}x]\nSkip Silence    [$SKIP_SILENCE]\nDownload Dir    [$DOWNLOAD_DIR]\nEpisodes/Feed   [$EPISODE_COUNT]\nCache TTL       [${CACHE_TTL} min]\nClear Played History\nClear Position Data\nClear Episode Cache" | \
+        dmenu -i -l 10 -p "Settings")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Playback Speed"*)
+            speed_control
+            ;;
+        "Skip Silence"*)
+            local val
+            val=$(printf "yes\nno" | dmenu -i -l 2 \
+                -p "Skip silence (current: $SKIP_SILENCE)")
+            [ -z "$val" ] && return
+            save_setting "SKIP_SILENCE" "$val"
+            SKIP_SILENCE="$val"
+            notify-send "Podcast" "Skip silence: $val"
+            ;;
+        "Download Dir"*)
+            local val
+            val=$(echo "$DOWNLOAD_DIR" | dmenu -p "Download directory")
+            [ -z "$val" ] && return
+            mkdir -p "$val"
+            save_setting "DOWNLOAD_DIR" "$val"
+            notify-send "Podcast" "Download dir: $val"
+            ;;
+        "Episodes/Feed"*)
+            local val
+            val=$(printf "10\n20\n30\n50\n100" | dmenu -i -l 5 \
+                -p "Episodes per feed (current: $EPISODE_COUNT)")
+            [ -z "$val" ] && return
+            save_setting "EPISODE_COUNT" "$val"
+            notify-send "Podcast" "Episodes per feed: $val"
+            ;;
+        "Cache TTL"*)
+            local val
+            val=$(printf "15\n30\n60\n120\n360" | dmenu -i -l 5 \
+                -p "Cache TTL minutes (current: $CACHE_TTL)")
+            [ -z "$val" ] && return
+            save_setting "CACHE_TTL" "$val"
+            notify-send "Podcast" "Cache TTL: ${val} min"
+            ;;
+        "Clear Played History")
+            > "$PLAYED_FILE"
+            notify-send "Podcast" "Played history cleared."
+            ;;
+        "Clear Position Data")
+            > "$POSITIONS_FILE"
+            notify-send "Podcast" "Position data cleared."
+            ;;
+        "Clear Episode Cache")
+            rm -f "$CACHE_DIR"/*
+            notify-send "Podcast" "Episode cache cleared."
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+podcast_status=""
+is_running "$PODCAST_PID_FILE" && podcast_status=" [PLAYING ${PLAYBACK_SPEED}x]"
+
+queue_count=$(grep -c . "$QUEUE_FILE" 2>/dev/null || echo 0)
+new_count=0  # could be computed from cache vs played, kept simple for now
+
+choice=$(printf \
+    "Browse Feeds\nSearch Episodes\nQueue [$queue_count]\nHistory\nSubscriptions\nSpeed [${PLAYBACK_SPEED}x]\nStop\nSettings" | \
+    dmenu -i -l 10 -p "Podcasts${podcast_status}")
+[ -z "$choice" ] && exit
+
+case "$choice" in
+    "Browse Feeds")
+        if [ ! -s "$FEEDS_FILE" ]; then
+            notify-send "Podcast" "No feeds yet. Go to Subscriptions → Add Feed."
+            exit
+        fi
+        sel_name=$(awk -F'\t' '{print $1}' "$FEEDS_FILE" | \
+            dmenu -i -l 20 -p "Select Feed")
+        [ -z "$sel_name" ] && exit
+        sel_url=$(grep "^$(escape_for_grep "$sel_name")	" "$FEEDS_FILE" | \
+            awk -F'\t' '{print $2}')
+        [ -z "$sel_url" ] && exit
+        browse_feed "$sel_name" "$sel_url"
+        ;;
+    "Search Episodes")
+        search_episodes
+        ;;
+    "Queue"*)
+        queue_menu
+        ;;
+    "History")
+        [ ! -s "$HISTORY_FILE" ] && \
+            notify-send "Podcast" "No history yet." && exit
+        entry=$(grep "^#EXTINF" "$HISTORY_FILE" | \
+            sed 's/#EXTINF:-1,//' | \
+            dmenu -i -l 20 -p "History")
+        [ -z "$entry" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$entry")$" \
+            "$HISTORY_FILE" | tail -n1)
+        [[ -n "$url" && "$url" != \#* ]] && episode_action "$url" "$entry" ""
+        ;;
+    "Subscriptions")
+        subscriptions_menu
+        ;;
+    "Speed"*)
+        speed_control
+        ;;
+    "Stop")
+        if is_running "$PODCAST_PID_FILE"; then
+            save_position
+            kill_pid_file "$PODCAST_PID_FILE"
+            notify-send "Podcast" "Stopped."
+        else
+            notify-send "Podcast" "Nothing playing."
+        fi
+        ;;
+    "Settings")
+        settings_menu
+        ;;
+esac

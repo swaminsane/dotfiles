@@ -2,11 +2,11 @@
 source "$HOME/.local/bin/menu/music/lib/common"
 
 choice=$(printf "Select Song\nAdd to Queue\nOpen ncmpcpp\nUpdate Library\nStart MPD\nStop MPD" | \
-    dmenu -l 10 -p "MPC")
+    dmenu -i -l 10 -p "MPC")
 
 case "$choice" in
     "Select Song")
-        song=$(/usr/bin/mpc listall | dmenu -l 20 -p "Play song")
+        song=$(/usr/bin/mpc listall | dmenu -i -l 20 -p "Play song")
         if [ -n "$song" ]; then
             stop_all_external
             /usr/bin/mpc clear
@@ -15,7 +15,7 @@ case "$choice" in
         fi
         ;;
     "Add to Queue")
-        song=$(/usr/bin/mpc listall | dmenu -l 20 -p "Add to queue")
+        song=$(/usr/bin/mpc listall | dmenu -i -l 20 -p "Add to queue")
         [ -n "$song" ] && /usr/bin/mpc add "$song"
         ;;
     "Open ncmpcpp")

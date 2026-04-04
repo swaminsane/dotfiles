@@ -1,0 +1,102 @@
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+SLEEP_PID_FILE="/tmp/sleeptimer.pid"
+SLEEP_TIME_FILE="/tmp/sleeptimer.time"
+
+is_timer_running() {
+    [ -f "$SLEEP_PID_FILE" ] && kill -0 "$(cat "$SLEEP_PID_FILE")" 2>/dev/null
+}
+
+cancel_timer() {
+    if is_timer_running; then
+        kill "$(cat "$SLEEP_PID_FILE")" 2>/dev/null
+        rm -f "$SLEEP_PID_FILE" "$SLEEP_TIME_FILE"
+        notify-send "Sleep Timer" "Timer cancelled."
+    fi
+}
+
+fade_and_stop() {
+    local seconds="$1"
+    sleep "$seconds"
+
+    # Fade out — lower volume in steps over 30 seconds
+    if is_running "$YT_PID_FILE"; then
+        socket="$YT_SOCKET"
+        for vol in 80 60 40 20 5; do
+            echo "{\"command\":[\"set_property\",\"volume\",$vol]}" | \
+                socat - "$socket" 2>/dev/null
+            sleep 6
+        done
+        kill_pid_file "$YT_PID_FILE"
+    elif is_running "$RADIO_PID_FILE"; then
+        socket="$RADIO_SOCKET"
+        for vol in 80 60 40 20 5; do
+            echo "{\"command\":[\"set_property\",\"volume\",$vol]}" | \
+                socat - "$socket" 2>/dev/null
+            sleep 6
+        done
+        kill_pid_file "$RADIO_PID_FILE"
+    else
+        # MPC — fade via volume
+        for vol in 80 60 40 20 5; do
+            /usr/bin/mpc volume "$vol" 2>/dev/null
+            sleep 6
+        done
+        /usr/bin/mpc stop 2>/dev/null
+        /usr/bin/mpc volume 100 2>/dev/null
+    fi
+
+    rm -f "$SLEEP_PID_FILE" "$SLEEP_TIME_FILE"
+    notify-send "Sleep Timer" "Goodnight."
+}
+
+# Status
+timer_status=""
+if is_timer_running; then
+    end_time=$(cat "$SLEEP_TIME_FILE" 2>/dev/null)
+    now=$(date +%s)
+    remaining=$(( end_time - now ))
+    mins=$(( remaining / 60 ))
+    timer_status=" [${mins}m left]"
+fi
+
+choice=$(printf "15 minutes\n30 minutes\n45 minutes\n60 minutes\n90 minutes\nCustom\nCancel Timer" | \
+    dmenu -i -l 10 -p "Sleep Timer$timer_status")
+
+[ -z "$choice" ] && exit
+
+case "$choice" in
+    "15 minutes")  secs=900  ;;
+    "30 minutes")  secs=1800 ;;
+    "45 minutes")  secs=2700 ;;
+    "60 minutes")  secs=3600 ;;
+    "90 minutes")  secs=5400 ;;
+    "Custom")
+        custom=$(echo "" | dmenu -p "Minutes until sleep")
+        [[ ! "$custom" =~ ^[0-9]+$ ]] && notify-send "Sleep Timer" "Invalid input." && exit
+        secs=$(( custom * 60 ))
+        ;;
+    "Cancel Timer")
+        cancel_timer
+        exit
+        ;;
+esac
+
+# Cancel any existing timer before setting new one
+cancel_timer 2>/dev/null
+
+# Subtract 30s fade time from sleep so total = chosen duration
+fade_duration=30
+sleep_secs=$(( secs - fade_duration ))
+[ "$sleep_secs" -lt 0 ] && sleep_secs=0
+
+# Save end time for status display
+echo $(( $(date +%s) + secs )) > "$SLEEP_TIME_FILE"
+
+# Run in background
+( fade_and_stop "$sleep_secs" ) &
+echo $! > "$SLEEP_PID_FILE"
+
+mins=$(( secs / 60 ))
+notify-send "Sleep Timer" "Stopping in ${mins} minutes. Goodnight 🌙"

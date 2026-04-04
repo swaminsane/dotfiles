@@ -2,10 +2,20 @@
 SCRIPTS_DIR="$HOME/.local/bin/menu/music"
 source "$SCRIPTS_DIR/lib/common"
 
+# Sleep timer status in prompt
+timer_status=""
+if [ -f "/tmp/sleeptimer.pid" ] && kill -0 "$(cat /tmp/sleeptimer.pid)" 2>/dev/null; then
+    end_time=$(cat /tmp/sleeptimer.time 2>/dev/null)
+    now=$(date +%s)
+    remaining=$(( end_time - now ))
+    mins=$(( remaining / 60 ))
+    timer_status=" | sleep ${mins}m"
+fi
+
 status="$(get_status)"
 
-choice=$(printf "Play/Pause\nNext\nPrevious\nMPC\nRadio\nYouTube" | \
-    dmenu -l 10 -p "Music | $status")
+choice=$(printf "Play/Pause\nNext\nPrevious\nMPC\nRadio\nYouTube\nAlbum Search\nSleep Timer" | \
+    dmenu -i -l 10 -p "Music | $status$timer_status")
 
 case "$choice" in
     "Play/Pause")
@@ -33,5 +43,11 @@ case "$choice" in
         ;;
     "YouTube")
         bash "$SCRIPTS_DIR/lib/ytmenu"
+        ;;
+    "Album Search")
+        bash "$SCRIPTS_DIR/lib/albumsearch"
+        ;;
+    "Sleep Timer")
+        bash "$SCRIPTS_DIR/lib/sleeptimer"
         ;;
 esac

@@ -5,7 +5,7 @@ radio_status=""
 is_running "$RADIO_PID_FILE" && radio_status=" [LIVE]"
 
 choice=$(printf "Play Station\nStop Radio\nAdd Station\nRemove Station\nList Stations" | \
-    dmenu -l 10 -p "Radio$radio_status")
+    dmenu -i -l 10 -p "Radio$radio_status")
 
 case "$choice" in
     "Play Station")
@@ -14,7 +14,7 @@ case "$choice" in
             exit
         fi
         station=$(grep "^#EXTINF" "$RADIO_FILE" | sed 's/#EXTINF:-1,//' | \
-            dmenu -l 20 -p "Select station")
+            dmenu -i -l 20 -p "Select station")
         [ -z "$station" ] && exit
         url=$(grep -A1 "^#EXTINF:-1,$station$" "$RADIO_FILE" | tail -n1)
         if [ -n "$url" ]; then
@@ -54,7 +54,7 @@ case "$choice" in
             exit
         fi
         station=$(grep "^#EXTINF" "$RADIO_FILE" | sed 's/#EXTINF:-1,//' | \
-            dmenu -l 20 -p "Remove which?")
+            dmenu -i -l 20 -p "Remove which?")
         [ -z "$station" ] && exit
         sed -i "/^#EXTINF:-1,$station$/{N;d;}" "$RADIO_FILE"
         notify-send "Radio" "Removed: $station"

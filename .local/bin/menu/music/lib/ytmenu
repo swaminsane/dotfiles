@@ -1,84 +1,524 @@
 #!/bin/bash
 source "$HOME/.local/bin/menu/music/lib/common"
 
-yt_status=""
-is_running "$YT_PID_FILE" && yt_status=" [PLAYING]"
+YT_HISTORY_FILE="$HOME/.local/share/music-menu/yt_history"
+YT_SETTINGS_FILE="$HOME/.local/share/music-menu/yt_settings"
+DOWNLOAD_LOG="$HOME/.local/share/music-menu/download_log"
+# YT_FILE must exist in common; define a fallback so saved_menu never
+# operates on an empty path.
+: "${YT_FILE:=$HOME/.local/share/music-menu/yt_saved}"
 
-choice=$(printf "Play Saved\nPlay URL Now\nStop\nSave URL\nRemove Saved\nList Saved" | \
-    dmenu -l 10 -p "YouTube$yt_status")
+[ -f "$YT_HISTORY_FILE" ] || touch "$YT_HISTORY_FILE"
+[ -f "$YT_FILE" ]         || touch "$YT_FILE"
+[ -f "$DOWNLOAD_LOG" ]    || touch "$DOWNLOAD_LOG"
 
-case "$choice" in
-    "Play Saved")
-        if [ ! -s "$YT_FILE" ]; then
-            notify-send "YouTube" "No saved URLs yet."
-            exit
-        fi
-        entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
-            dmenu -l 20 -p "Select to play")
-        [ -z "$entry" ] && exit
-        url=$(grep -A1 "^#EXTINF:-1,$entry$" "$YT_FILE" | tail -n1)
-        if [ -n "$url" ]; then
-            kill_pid_file "$YT_PID_FILE"
-            kill_pid_file "$RADIO_PID_FILE"
-            /usr/bin/mpc pause 2>/dev/null
-            notify-send "YouTube" "Fetching: $entry..."
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+load_settings() {
+    DOWNLOAD_DIR="$HOME/Music/Downloads"
+    PLAYBACK_MODE="audio"       # audio | video | thumbnail
+    DOWNLOAD_FORMAT="MP3"       # MP3 | FLAC | M4A | Best Audio
+    SEARCH_RESULTS=15
+    [ -f "$YT_SETTINGS_FILE" ] && source "$YT_SETTINGS_FILE"
+    mkdir -p "$DOWNLOAD_DIR"
+}
+
+save_setting() {
+    local key="$1" val="$2"
+    touch "$YT_SETTINGS_FILE"
+    if grep -q "^${key}=" "$YT_SETTINGS_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$YT_SETTINGS_FILE"
+    else
+        echo "${key}=\"${val}\"" >> "$YT_SETTINGS_FILE"
+    fi
+}
+
+load_settings
+
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
+
+add_to_history() {
+    local title="$1" url="$2"
+    # Remove any existing entry for this title first
+    sed -i "/^#EXTINF:-1,$(printf '%s' "$title" | sed 's/[[\.*^$()+?{}|]/\\&/g')$/{N;d;}" \
+        "$YT_HISTORY_FILE"
+    printf "#EXTINF:-1,%s\n%s\n" "$title" "$url" | \
+        cat - "$YT_HISTORY_FILE" > /tmp/yt_hist_tmp && \
+        mv /tmp/yt_hist_tmp "$YT_HISTORY_FILE"
+}
+
+# Escape a string for use as a fixed grep pattern (-F) or a basic regex.
+# Used when grepping for exact title lines in M3U files.
+escape_for_grep() {
+    printf '%s' "$1" | sed 's/[[\.*^$()+?{}|]/\\&/g'
+}
+
+pick_format() {
+    printf "MP3\nFLAC\nM4A\nBest Audio" | \
+        dmenu -i -l 5 -p "Format (default: $DOWNLOAD_FORMAT)"
+}
+
+# Build yt-dlp audio args into a global array DL_ARGS.
+# FIX: was an unquoted string — breaks on "Best Audio" (space) and any
+#      format with spaces passed to yt-dlp.
+set_dl_args() {
+    local format="$1"
+    case "$format" in
+        "MP3")        DL_ARGS=(--extract-audio --audio-format mp3  --audio-quality 0) ;;
+        "FLAC")       DL_ARGS=(--extract-audio --audio-format flac) ;;
+        "M4A")        DL_ARGS=(--extract-audio --audio-format m4a  --audio-quality 0) ;;
+        "Best Audio") DL_ARGS=(--extract-audio --audio-quality 0) ;;
+        *)            DL_ARGS=(--extract-audio --audio-quality 0) ;;
+    esac
+}
+
+play_url() {
+    local url="$1" title="$2"
+    kill_pid_file "$YT_PID_FILE"
+    kill_pid_file "$RADIO_PID_FILE"
+    /usr/bin/mpc pause 2>/dev/null
+
+    case "$PLAYBACK_MODE" in
+        "audio")
             mpv --no-video --really-quiet \
                 --ytdl-format="bestaudio" \
                 --input-ipc-server="$YT_SOCKET" \
                 "$url" &
+            ;;
+        "video")
+            mpv --really-quiet \
+                --ytdl-format="bestvideo+bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                "$url" &
+            ;;
+        "thumbnail")
+            local thumb
+            thumb=$(yt-dlp --get-thumbnail "$url" 2>/dev/null)
+            if [ -n "$thumb" ]; then
+                curl -s "$thumb" -o /tmp/yt_thumb.jpg 2>/dev/null
+                feh --title "yt-thumb" --geometry 400x400 /tmp/yt_thumb.jpg &
+            fi
+            mpv --no-video --really-quiet \
+                --ytdl-format="bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                "$url" &
+            ;;
+    esac
+
+    echo $! > "$YT_PID_FILE"
+    add_to_history "$title" "$url"
+    notify-send "YouTube" "Playing: $title"
+}
+
+download_url() {
+    local url="$1" title="$2" format="$3" outdir="${4:-$DOWNLOAD_DIR}"
+    mkdir -p "$outdir"
+    set_dl_args "$format"
+    notify-send "Download" "Starting: $title"
+    yt-dlp "${DL_ARGS[@]}" \
+        --embed-thumbnail \
+        --embed-metadata \
+        --output "$outdir/%(title)s.%(ext)s" \
+        "$url" > /tmp/yt_dl_out 2>&1
+    if [ $? -eq 0 ]; then
+        notify-send "Download" "Done: $title"
+        printf "%s\t%s\t%s\n" \
+            "$(date '+%Y-%m-%d %H:%M')" "$title" "$url" >> "$DOWNLOAD_LOG"
+    else
+        notify-send "Download" "Failed: $title"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Parse flags from query
+# Sets globals: SEARCH_TYPE  CLEAN_QUERY
+# lv <query> → live search.  Everything else → video search.
+# ---------------------------------------------------------------------------
+parse_query() {
+    local raw="$1"
+    if echo "$raw" | grep -qi "^lv "; then
+        SEARCH_TYPE="live"
+        CLEAN_QUERY=$(echo "$raw" | sed 's/^[Ll][Vv] //')
+    else
+        SEARCH_TYPE="video"
+        CLEAN_QUERY="$raw"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Run search → tab-separated lines: title \t url \t info
+# ---------------------------------------------------------------------------
+run_search() {
+    local query="$1" type="$2"
+    case "$type" in
+        "live")
+            notify-send "YouTube" "Searching live: $query..."
+            yt-dlp "ytsearch$SEARCH_RESULTS:$query" \
+                --match-filter "is_live" \
+                --print "%(title)s	%(webpage_url)s	LIVE" \
+                2>/dev/null
+            ;;
+        "video")
+            notify-send "YouTube" "Searching: $query..."
+            yt-dlp "ytsearch$SEARCH_RESULTS:$query" \
+                --print "%(title)s	%(webpage_url)s	%(duration_string)s" \
+                --no-playlist 2>/dev/null
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Show results in dmenu → prints "url\ttitle" to stdout.
+#
+# FIX (was the main breakage): the old approach stripped the trailing info
+# column from the selected display line to reconstruct the title, then
+# grep'd for it.  This was doubly broken:
+#   1. The strip-regex ate the last word of titles ending in alphanumerics.
+#   2. Titles with regex metacharacters or pipes caused wrong matches.
+#
+# New approach: prefix each display row with a 1-based index; after the
+# user selects, parse the index and look up the original data directly.
+# ---------------------------------------------------------------------------
+pick_result() {
+    local results="$1" prompt="$2"
+    [ -z "$results" ] && notify-send "YouTube" "No results found." && return 1
+
+    # Build display: " 1. <title padded to 60>  <info>"
+    local display
+    display=$(echo "$results" | awk -F'\t' '{printf "%2d. %-60s %s\n", NR, $1, $3}')
+
+    local selected
+    selected=$(echo "$display" | dmenu -i -l 15 -p "$prompt")
+    [ -z "$selected" ] && return 1
+
+    # Extract the leading index number
+    local idx
+    idx=$(echo "$selected" | awk '{print $1}' | tr -d '.')
+    if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+        notify-send "YouTube" "Could not parse selection."
+        return 1
+    fi
+
+    local url title
+    url=$(echo   "$results" | awk -F'\t' "NR==$idx {print \$2}")
+    title=$(echo "$results" | awk -F'\t' "NR==$idx {print \$1}")
+
+    [ -z "$url" ] && notify-send "YouTube" "No URL for selection." && return 1
+
+    # Output as tab-separated (titles never contain literal tabs)
+    printf '%s\t%s' "$url" "$title"
+}
+
+# ---------------------------------------------------------------------------
+# Playlist: browse tracks, play or download one / all
+# ---------------------------------------------------------------------------
+handle_playlist() {
+    local url="$1" playlist_title="$2" mode="$3"
+    notify-send "YouTube" "Fetching: $playlist_title..."
+
+    local tracks
+    tracks=$(yt-dlp --flat-playlist \
+        --print "%(title)s	%(webpage_url)s" \
+        "$url" 2>/dev/null)
+    [ -z "$tracks" ] && notify-send "YouTube" "Could not fetch playlist." && return
+
+    local track_count
+    track_count=$(echo "$tracks" | wc -l)
+
+    local selected
+    selected=$(printf "▶ Play All (%s tracks)\n%s" \
+        "$track_count" \
+        "$(echo "$tracks" | awk -F'\t' '{print $1}')" | \
+        dmenu -i -l 20 -p "$playlist_title")
+    [ -z "$selected" ] && return
+
+    if [ "$selected" = "▶ Play All ($track_count tracks)" ]; then
+        if [ "$mode" = "download" ]; then
+            local format
+            format=$(pick_format)
+            [ -z "$format" ] && return
+            (
+                set_dl_args "$format"
+                notify-send "Download" "Downloading: $playlist_title ($track_count tracks)"
+                mkdir -p "$DOWNLOAD_DIR/$playlist_title"
+                yt-dlp "${DL_ARGS[@]}" \
+                    --embed-thumbnail --embed-metadata \
+                    --yes-playlist \
+                    --output "$DOWNLOAD_DIR/$playlist_title/%(playlist_index)s - %(title)s.%(ext)s" \
+                    "$url" > /tmp/yt_dl_out 2>&1
+                notify-send "Download" "Done: $playlist_title"
+                printf "%s\t%s\t%s\n" \
+                    "$(date '+%Y-%m-%d %H:%M')" "$playlist_title" "$url" >> "$DOWNLOAD_LOG"
+            ) &
+        else
+            local pl_file="/tmp/yt_playlist.txt"
+            echo "$tracks" | awk -F'\t' '{print $2}' > "$pl_file"
+            kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$RADIO_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+            mpv --no-video --really-quiet \
+                --ytdl-format="bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                --playlist="$pl_file" &
             echo $! > "$YT_PID_FILE"
+            add_to_history "$playlist_title" "$url"
+            notify-send "YouTube" "Playing playlist: $playlist_title"
         fi
+    else
+        # Single track — find by exact title (tab-delimited, so safe)
+        local track_url
+        track_url=$(echo "$tracks" | awk -F'\t' -v t="$selected" '$1==t {print $2; exit}')
+        [ -z "$track_url" ] && return
+        if [ "$mode" = "download" ]; then
+            local format
+            format=$(pick_format)
+            [ -z "$format" ] && return
+            ( download_url "$track_url" "$selected" "$format" ) &
+        else
+            play_url "$track_url" "$selected"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Search & play/download flow
+# ---------------------------------------------------------------------------
+search_flow() {
+    local mode="$1"   # play | download
+    local prompt_hint
+    if [ "$mode" = "play" ]; then
+        prompt_hint="Search / URL / history  (lv: live)"
+    else
+        prompt_hint="Search or paste URL to download  (lv: live)"
+    fi
+
+    local input
+    if [ "$mode" = "play" ]; then
+        input=$(grep "^#EXTINF" "$YT_HISTORY_FILE" | \
+            sed 's/#EXTINF:-1,//' | head -n20 | \
+            dmenu -i -l 20 -p "$prompt_hint")
+    else
+        input=$(echo "" | dmenu -p "$prompt_hint")
+    fi
+    [ -z "$input" ] && return
+
+    # --- URL path: input looks like a URL ---
+    if echo "$input" | grep -qE '^https?://'; then
+        # Playlist URL (has list= parameter)
+        if echo "$input" | grep -qE '[?&]list='; then
+            notify-send "YouTube" "Fetching playlist info..."
+            local playlist_title
+            playlist_title=$(yt-dlp --flat-playlist \
+                --print "%(playlist_title)s" "$input" 2>/dev/null | \
+                grep -v '^$' | head -n1)
+            [ -z "$playlist_title" ] && playlist_title="Playlist"
+            handle_playlist "$input" "$playlist_title" "$mode"
+        else
+            # Single video URL — fetch title for history then play/download
+            notify-send "YouTube" "Fetching title..."
+            local title
+            title=$(yt-dlp --get-title "$input" 2>/dev/null | head -n1)
+            [ -z "$title" ] && title="$input"
+            if [ "$mode" = "download" ]; then
+                local format
+                format=$(pick_format)
+                [ -z "$format" ] && return
+                ( download_url "$input" "$title" "$format" ) &
+            else
+                play_url "$input" "$title"
+            fi
+        fi
+        return
+    fi
+
+    # --- History exact-match check (play mode only) ---
+    if [ "$mode" = "play" ]; then
+        local pattern
+        pattern=$(escape_for_grep "$input")
+        local hist_url
+        hist_url=$(grep -A1 "^#EXTINF:-1,${pattern}$" "$YT_HISTORY_FILE" | tail -n1)
+        if [ -n "$hist_url" ] && [[ "$hist_url" != \#* ]]; then
+            play_url "$hist_url" "$input"
+            return
+        fi
+    fi
+
+    # --- Normal search path ---
+    parse_query "$input"
+
+    local results
+    results=$(run_search "$CLEAN_QUERY" "$SEARCH_TYPE")
+    [ -z "$results" ] && return
+
+    local result
+    result=$(pick_result "$results" "$CLEAN_QUERY") || return
+    local url title
+    url=$(printf '%s' "$result"  | cut -d$'\t' -f1)
+    title=$(printf '%s' "$result" | cut -d$'\t' -f2-)
+
+    if [ "$mode" = "download" ]; then
+        local format
+        format=$(pick_format)
+        [ -z "$format" ] && return
+        ( download_url "$url" "$title" "$format" ) &
+    else
+        play_url "$url" "$title"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Saved submenu
+# ---------------------------------------------------------------------------
+saved_menu() {
+    local choice
+    choice=$(printf "List\nAdd\nRemove" | dmenu -i -l 5 -p "Saved")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "List")
+            if [ ! -s "$YT_FILE" ]; then
+                notify-send "YouTube" "No saved URLs yet."
+                return
+            fi
+            local entry
+            entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
+                dmenu -i -l 20 -p "Saved — pick to play")
+            [ -z "$entry" ] && return
+            local url
+            url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$entry")$" "$YT_FILE" | tail -n1)
+            [ -n "$url" ] && [[ "$url" != \#* ]] && play_url "$url" "$entry"
+            ;;
+        "Add")
+            local input
+            input=$(grep "^#EXTINF" "$YT_HISTORY_FILE" | \
+                sed 's/#EXTINF:-1,//' | head -n20 | \
+                dmenu -i -l 20 -p "Pick from history or paste URL to save")
+            [ -z "$input" ] && return
+            local url title
+            url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$input")$" \
+                "$YT_HISTORY_FILE" | tail -n1)
+            if [ -n "$url" ] && [[ "$url" != \#* ]]; then
+                title="$input"
+            else
+                notify-send "YouTube" "Fetching title..."
+                title=$(yt-dlp --get-title "$input" 2>/dev/null | head -n1)
+                [ -z "$title" ] && title="$input"
+                url="$input"
+            fi
+            if grep -qF "$(escape_for_grep "#EXTINF:-1,$title")" "$YT_FILE"; then
+                notify-send "YouTube" "Already saved: $title"
+                return
+            fi
+            printf "#EXTINF:-1,%s\n%s\n" "$title" "$url" >> "$YT_FILE"
+            notify-send "YouTube" "Saved: $title"
+            ;;
+        "Remove")
+            if [ ! -s "$YT_FILE" ]; then
+                notify-send "YouTube" "Nothing saved."
+                return
+            fi
+            local entry
+            entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
+                dmenu -i -l 20 -p "Remove which?")
+            [ -z "$entry" ] && return
+            sed -i "/^#EXTINF:-1,$(escape_for_grep "$entry")$/{N;d;}" "$YT_FILE"
+            notify-send "YouTube" "Removed: $entry"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Settings submenu
+# ---------------------------------------------------------------------------
+settings_menu() {
+    local choice
+    choice=$(printf \
+        "Playback Mode [$PLAYBACK_MODE]\nDownload Format [$DOWNLOAD_FORMAT]\nDownload Path [$DOWNLOAD_DIR]\nSearch Results [$SEARCH_RESULTS]" | \
+        dmenu -i -l 10 -p "Settings")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Playback Mode"*)
+            local val
+            val=$(printf "audio\nvideo\nthumbnail" | \
+                dmenu -i -l 5 -p "Mode (current: $PLAYBACK_MODE)")
+            [ -z "$val" ] && return
+            save_setting "PLAYBACK_MODE" "$val"
+            notify-send "Settings" "Playback: $val"
+            ;;
+        "Download Format"*)
+            local val
+            val=$(printf "MP3\nFLAC\nM4A\nBest Audio" | \
+                dmenu -i -l 5 -p "Format (current: $DOWNLOAD_FORMAT)")
+            [ -z "$val" ] && return
+            save_setting "DOWNLOAD_FORMAT" "$val"
+            notify-send "Settings" "Download format: $val"
+            ;;
+        "Download Path"*)
+            local val
+            val=$(echo "$DOWNLOAD_DIR" | dmenu -p "Download path")
+            [ -z "$val" ] && return
+            mkdir -p "$val"
+            save_setting "DOWNLOAD_DIR" "$val"
+            notify-send "Settings" "Download path: $val"
+            ;;
+        "Search Results"*)
+            local val
+            val=$(printf "5\n10\n15\n20\n25" | \
+                dmenu -i -l 5 -p "Results count (current: $SEARCH_RESULTS)")
+            [ -z "$val" ] && return
+            save_setting "SEARCH_RESULTS" "$val"
+            notify-send "Settings" "Search results: $val"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+yt_status=""
+is_running "$YT_PID_FILE" && yt_status=" [PLAYING]"
+
+choice=$(printf "Search\nDownload\nHistory\nSaved\nStop\nSettings" | \
+    dmenu -i -l 10 -p "YouTube$yt_status")
+[ -z "$choice" ] && exit
+
+case "$choice" in
+    "Search")
+        search_flow "play"
         ;;
-    "Play URL Now")
-        url=$(echo "" | dmenu -p "Paste URL")
-        [ -z "$url" ] && exit
-        kill_pid_file "$YT_PID_FILE"
-        kill_pid_file "$RADIO_PID_FILE"
-        /usr/bin/mpc pause 2>/dev/null
-        notify-send "YouTube" "Fetching stream..."
-        mpv --no-video --really-quiet \
-            --ytdl-format="bestaudio" \
-            --input-ipc-server="$YT_SOCKET" \
-            "$url" &
-        echo $! > "$YT_PID_FILE"
+    "Download")
+        search_flow "download"
+        ;;
+    "History")
+        if [ ! -s "$YT_HISTORY_FILE" ]; then
+            notify-send "YouTube" "No history yet."
+            exit
+        fi
+        entry=$(grep "^#EXTINF" "$YT_HISTORY_FILE" | \
+            sed 's/#EXTINF:-1,//' | \
+            dmenu -i -l 20 -p "History")
+        [ -z "$entry" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$entry")$" \
+            "$YT_HISTORY_FILE" | tail -n1)
+        [ -n "$url" ] && [[ "$url" != \#* ]] && play_url "$url" "$entry"
+        ;;
+    "Saved")
+        saved_menu
         ;;
     "Stop")
         if is_running "$YT_PID_FILE"; then
             kill_pid_file "$YT_PID_FILE"
             notify-send "YouTube" "Stopped."
         else
-            notify-send "YouTube" "Nothing is playing."
+            notify-send "YouTube" "Nothing playing."
         fi
         ;;
-    "Save URL")
-        url=$(echo "" | dmenu -p "Paste URL to save")
-        [ -z "$url" ] && exit
-        name=$(echo "" | dmenu -p "Enter a name for it")
-        [ -z "$name" ] && exit
-        if grep -q "^#EXTINF:-1,$name$" "$YT_FILE"; then
-            notify-send "YouTube" "'$name' already exists."
-            exit
-        fi
-        printf "#EXTINF:-1,%s\n%s\n" "$name" "$url" >> "$YT_FILE"
-        notify-send "YouTube" "Saved: $name"
-        ;;
-    "Remove Saved")
-        if [ ! -s "$YT_FILE" ]; then
-            notify-send "YouTube" "No saved URLs yet."
-            exit
-        fi
-        entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
-            dmenu -l 20 -p "Remove which?")
-        [ -z "$entry" ] && exit
-        sed -i "/^#EXTINF:-1,$entry$/{N;d;}" "$YT_FILE"
-        notify-send "YouTube" "Removed: $entry"
-        ;;
-    "List Saved")
-        if [ ! -s "$YT_FILE" ]; then
-            notify-send "YouTube" "No saved URLs yet."
-            exit
-        fi
-        notify-send "YouTube Saved" "$(grep "^#EXTINF" "$YT_FILE" | \
-            sed 's/#EXTINF:-1,//' | nl -ba)"
+    "Settings")
+        settings_menu
         ;;
 esac
