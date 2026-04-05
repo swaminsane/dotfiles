@@ -16,9 +16,6 @@ DOWNLOAD_LOG="$PODCAST_DIR/download_log"
 CACHE_DIR="$PODCAST_DIR/cache"          # per-feed episode lists
 SETTINGS_FILE="$PODCAST_DIR/settings"
 
-PODCAST_PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/podcast.pid"
-PODCAST_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/podcast.sock"
-
 mkdir -p "$PODCAST_DIR" "$CACHE_DIR"
 for _f in "$FEEDS_FILE" "$PLAYED_FILE" "$HISTORY_FILE" \
            "$QUEUE_FILE" "$POSITIONS_FILE" "$DOWNLOAD_LOG"; do

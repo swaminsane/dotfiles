@@ -16,29 +16,33 @@ cancel_timer() {
     fi
 }
 
+fade_and_kill() {
+    local pid_file="$1"
+    local socket="$2"
+
+    for vol in 80 60 40 20 5; do
+        echo "{\"command\":[\"set_property\",\"volume\",$vol]}" | \
+            socat - "$socket" 2>/dev/null
+        sleep 6
+    done
+    kill_pid_file "$pid_file"
+}
+
 fade_and_stop() {
     local seconds="$1"
     sleep "$seconds"
 
-    # Fade out — lower volume in steps over 30 seconds
     if is_running "$YT_PID_FILE"; then
-        socket="$YT_SOCKET"
-        for vol in 80 60 40 20 5; do
-            echo "{\"command\":[\"set_property\",\"volume\",$vol]}" | \
-                socat - "$socket" 2>/dev/null
-            sleep 6
-        done
-        kill_pid_file "$YT_PID_FILE"
+        fade_and_kill "$YT_PID_FILE" "$YT_SOCKET"
+
     elif is_running "$RADIO_PID_FILE"; then
-        socket="$RADIO_SOCKET"
-        for vol in 80 60 40 20 5; do
-            echo "{\"command\":[\"set_property\",\"volume\",$vol]}" | \
-                socat - "$socket" 2>/dev/null
-            sleep 6
-        done
-        kill_pid_file "$RADIO_PID_FILE"
+        fade_and_kill "$RADIO_PID_FILE" "$RADIO_SOCKET"
+
+    elif is_running "$PODCAST_PID_FILE"; then
+        fade_and_kill "$PODCAST_PID_FILE" "$PODCAST_SOCKET"
+
     else
-        # MPC — fade via volume
+        # MPC fallback
         for vol in 80 60 40 20 5; do
             /usr/bin/mpc volume "$vol" 2>/dev/null
             sleep 6
@@ -50,6 +54,7 @@ fade_and_stop() {
     rm -f "$SLEEP_PID_FILE" "$SLEEP_TIME_FILE"
     notify-send "Sleep Timer" "Goodnight."
 }
+
 
 # Status
 timer_status=""

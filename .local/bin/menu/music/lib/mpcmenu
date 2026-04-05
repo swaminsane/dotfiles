@@ -1,7 +1,7 @@
 #!/bin/bash
 source "$HOME/.local/bin/menu/music/lib/common"
 
-choice=$(printf "Select Song\nAdd to Queue\nOpen ncmpcpp\nUpdate Library\nStart MPD\nStop MPD" | \
+choice=$(printf "Select Song\nSelect Playlist\nNext\nPrevious\nAdd to Queue\nOpen ncmpcpp\nUpdate Library\nStart MPD\nStop MPD" | \
     dmenu -i -l 10 -p "MPC")
 
 case "$choice" in
@@ -12,6 +12,29 @@ case "$choice" in
             /usr/bin/mpc clear
             /usr/bin/mpc add "$song"
             /usr/bin/mpc play
+        fi
+        ;;
+    "Select Playlist")
+        playlist=$(mpc listall | awk -F/ '{NF--; OFS="/"; print $0}' | grep '.' | sort -u | dmenu -i -l 20 -p "Play Directory:")
+        if [ -n "$playlist" ]; then
+            stop_all_external
+            /usr/bin/mpc clear
+            /usr/bin/mpc add "$playlist"
+            /usr/bin/mpc play
+           fi
+           ;;
+    "Next")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Next only works for MPC"
+        else
+            /usr/bin/mpc next
+        fi
+        ;;
+    "Previous")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Previous only works for MPC"
+        else
+            /usr/bin/mpc prev
         fi
         ;;
     "Add to Queue")

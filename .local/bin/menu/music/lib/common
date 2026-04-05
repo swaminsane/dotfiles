@@ -3,8 +3,10 @@ RADIO_FILE="$HOME/.local/share/music-menu/radio_stations"
 YT_FILE="$HOME/.local/share/music-menu/yt_stations"
 RADIO_PID_FILE="/tmp/radio.pid"
 YT_PID_FILE="/tmp/yt_mpv.pid"
+PODCAST_PID_FILE="/tmp/podcast.pid"
 RADIO_SOCKET="/tmp/radio_mpv.sock"
 YT_SOCKET="/tmp/yt_mpv.sock"
+PODCAST_SOCKET="/tmp/podcast.sock"
 SCRIPTS_DIR="$HOME/.local/bin/menu/music"
 
 # --- Ensure files exist ---
@@ -34,6 +36,7 @@ mpv_pause_toggle() {
 stop_all_external() {
     kill_pid_file "$YT_PID_FILE"
     kill_pid_file "$RADIO_PID_FILE"
+    kill_pid_file "$PODCAST_PID_FILE"
 }
 
 get_status() {
@@ -41,6 +44,8 @@ get_status() {
         echo "YouTube playing"
     elif is_running "$RADIO_PID_FILE"; then
         echo "Radio playing"
+    elif is_running "$PODCAST_PID_FILE"; then
+        echo "Podcast playing"
     else
         /usr/bin/mpc status 2>/dev/null | head -n1 | cat || echo "MPD idle"
     fi
@@ -53,6 +58,9 @@ smart_play_pause() {
     elif is_running "$RADIO_PID_FILE"; then
         mpv_pause_toggle "$RADIO_SOCKET"
         notify-send "Radio" "Play/Pause toggled"
+    elif is_running "$PODCAST_PID_FILE"; then
+        mpv_pause_toggle "$PODCAST_SOCKET"
+        notify-send "Podcast" "Play/Pause toggled"
     else
         /usr/bin/mpc toggle 2>/dev/null
     fi

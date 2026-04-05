@@ -14,7 +14,7 @@ fi
 
 status="$(get_status)"
 
-choice=$(printf "Play/Pause\nNext\nPrevious\nMPC\nRadio\nYouTube\nAlbum Search\nSleep Timer" | \
+choice=$(printf "Play/Pause\nNext\nPrevious\nMPC\nRadio\nYouTube\nPodcast\nSleep Timer" | \
     dmenu -i -l 10 -p "Music | $status$timer_status")
 
 case "$choice" in
@@ -44,8 +44,8 @@ case "$choice" in
     "YouTube")
         bash "$SCRIPTS_DIR/lib/ytmenu"
         ;;
-    "Album Search")
-        bash "$SCRIPTS_DIR/lib/albumsearch"
+    "Podcast")
+        bash "$SCRIPTS_DIR/lib/podcastmenu"
         ;;
     "Sleep Timer")
         bash "$SCRIPTS_DIR/lib/sleeptimer"

@@ -20,6 +20,7 @@ case "$choice" in
         if [ -n "$url" ]; then
             kill_pid_file "$RADIO_PID_FILE"
             kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$PODCAST_PID_FILE"
             /usr/bin/mpc pause 2>/dev/null
             mpv --no-video --really-quiet \
                 --input-ipc-server="$RADIO_SOCKET" \
