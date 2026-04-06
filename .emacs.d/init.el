@@ -11,20 +11,11 @@
   (package-refresh-contents)
   (package-install 'use-package))
 
-
+(defalias 'yes-or-no-p 'y-or-n-p)
 (use-package which-key
   :ensure t
   :init
   (which-key-mode))
-
-;; UI cleanup
-(tool-bar-mode -1)
-(menu-bar-mode -1)
-(scroll-bar-mode -1)
-(setq ring-bell-function
-      (lambda ()
-        (invert-face 'mode-line)
-        (run-with-timer 0.1 nil #'invert-face 'mode-line)))
 
 ;; Load custom lisp
 (add-to-list 'load-path (expand-file-name "lisp" user-emacs-directory))
@@ -33,17 +24,20 @@
 ;; Apply theme
 (suckless-apply-theme)
 
-;; Enable emacsclient
-(require 'server)
-(unless (server-running-p)
-  (server-start))
+;; (setq make-backup-file nil)
+;; (setq auto-save-default nil)
+
+
+(when (file-readable-p "~/.emacs.d/config.org")
+  (org-babel-load-file (expand-file-name "~/.emacs.d/config.org")))
+
 
 (custom-set-variables
  ;; custom-set-variables was added by Custom.
  ;; If you edit it by hand, you could mess it up, so be careful.
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
- '(package-selected-packages '(use-package)))
+ '(package-selected-packages nil))
 
 ;; Fonts
 (set-face-attribute 'default nil

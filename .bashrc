@@ -27,7 +27,14 @@ PROMPT_COMMAND="pwd > /tmp/last_dir; set_title"
 eval "$(zoxide init bash)"
 
 
-
+#Advance aliases
+vim() {
+  if [ "$#" -eq 0 ]; then
+    nvim .
+  else
+    nvim "$@"
+  fi
+}
 
 # aliases
 alias rm="rm -I"
@@ -41,8 +48,8 @@ alias soundr="systemctl --user restart pipewire.service"
 alias dots='git --git-dir=$HOME/dotfiles --work-tree=$HOME'
 alias tmux='tmux -f ~/.config/tmux/tmux.conf'
 alias musicr='systemctl --user restart mpd && mpc update --wait && pkill ncmpcpp 2>/dev/null; ncmpcpp'
-alias vim='nvim'
 alias suu="sudo apt update && sudo apt upgrade"
+alias e="emacs"
 # If not running interactively, don't do anything
 case $- in
     *i*) ;;
