@@ -4,8 +4,13 @@
 [ -f "$HOME/.profile" ] && . "$HOME/.profile"
 
 # Caps Lock as Escape
-# setxkbmap -option caps:escape &
-setxkbmap -option caps:ctrl_modifier &
+setxkbmap -option caps:escape &
+# setxkbmap -option caps:ctrl_modifier &
+
+# screen timeout
+xset s 600 600
+xset dpms 630 630 630
+xss-lock slock &
 
 # Only run these in dwm
 if [ "$WM" = "dwm" ]; then

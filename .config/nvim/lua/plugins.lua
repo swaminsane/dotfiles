@@ -10,12 +10,6 @@ vim.opt.rtp:prepend(lazypath)
 
 require("lazy").setup({
 
-  -- ── Colorscheme ────────────────────────────────────────────────────────
-  {
-    "ellisonleao/gruvbox.nvim",
-    priority = 1000,
-  },
-
   -- ── LSP (Neovim 0.11+ API) ─────────────────────────────────────────────
   {
     "neovim/nvim-lspconfig",
@@ -29,20 +23,31 @@ require("lazy").setup({
       })
       vim.lsp.enable("clangd")
 
--- Python LSP
-vim.lsp.config("pyright", {
-  capabilities = capabilities,
-  settings = {
-    python = {
-      analysis = {
-        autoImportCompletions = true,
-        typeCheckingMode = "basic",
-        diagnosticMode = "workspace",
-      },
-    },
-  },
-})
-vim.lsp.enable("pyright")
+      -- Python LSP
+      vim.lsp.config("pyright", {
+        capabilities = capabilities,
+        settings = {
+          python = {
+            analysis = {
+              autoImportCompletions = true,
+              typeCheckingMode = "basic",
+              diagnosticMode = "workspace",
+            },
+          },
+        },
+      })
+      vim.lsp.enable("pyright")
+
+      -- LaTeX LSP
+      vim.lsp.config("texlab", {
+        capabilities = capabilities,
+        settings = {
+          texlab = {
+            chktex = { onOpenAndSave = true },
+          },
+        },
+      })
+      vim.lsp.enable("texlab")
 
       -- LSP keymaps attach whenever any LSP connects
       vim.api.nvim_create_autocmd("LspAttach", {
@@ -66,16 +71,16 @@ vim.lsp.enable("pyright")
     end,
   },
 
-   -- ── Formatting (clang-format) ──────────────────────────────────────────
+  -- ── Formatting (clang-format) ──────────────────────────────────────────
   -- Requires: sudo apt install clang-format
   {
     "stevearc/conform.nvim",
     config = function()
       require("conform").setup({
         formatters_by_ft = {
-          c   = { "clang_format" },
-          cpp = { "clang_format" },
-          python = { "black" },   
+          c      = { "clang_format" },
+          cpp    = { "clang_format" },
+          python = { "black" },
         },
         format_on_save = {
           timeout_ms   = 500,
@@ -118,6 +123,17 @@ vim.lsp.enable("pyright")
     end,
   },
 
+-- orgmode
+{
+  "nvim-orgmode/orgmode",
+  ft = "org",
+  config = function()
+    require("orgmode").setup({
+      org_agenda_files = "~/org/**/*",
+      org_default_notes_file = "~/org/notes.org",
+    })
+  end,
+},
   -- ── Fuzzy Finder ───────────────────────────────────────────────────────
   -- Requires: sudo apt install ripgrep
   {
@@ -137,16 +153,17 @@ vim.lsp.enable("pyright")
 
   -- ── Syntax Highlighting ────────────────────────────────────────────────
   {
-  "nvim-treesitter/nvim-treesitter",
-  build = ":TSUpdate",
-  config = function()
-    require("nvim-treesitter.config").setup({
-      ensure_installed = { "c", "cpp", "lua", "python", "bash", "make" },
-      highlight        = { enable = true },
-      indent           = { enable = true },
-    })
-  end,
-},
+    "nvim-treesitter/nvim-treesitter",
+    build = ":TSUpdate",
+    config = function()
+      require("nvim-treesitter.config").setup({
+        ensure_installed = { "c", "cpp", "lua", "python", "bash", "make" },
+        highlight        = { enable = true },
+        indent           = { enable = true },
+      })
+    end,
+  },
+
   -- ── LaTeX ──────────────────────────────────────────────────────────────
   {
     "lervag/vimtex",
@@ -155,34 +172,78 @@ vim.lsp.enable("pyright")
       vim.g.vimtex_view_method                  = "zathura"
       vim.g.vimtex_compiler_method              = "latexmk"
       vim.g.vimtex_view_forward_search_on_start = 1
+      vim.opt.conceallevel                      = 2
     end,
   },
- -- ── Autocompletion ─────────────────────────────────────────────────────
+
+  -- ── Snippets ───────────────────────────────────────────────────────────
+  {
+  "L3MON4D3/LuaSnip",
+  version = "v2.*",
+  config = function()
+    require("luasnip").setup({
+      enable_autosnippets = true,   -- add this
+    })
+    require("luasnip.loaders.from_lua").load({
+      paths = vim.fn.stdpath("config") .. "/lua/snippets",
+    })
+  end,
+},
+   -- ── Autocompletion ─────────────────────────────────────────────────────
   {
     "hrsh7th/nvim-cmp",
     dependencies = {
       "hrsh7th/cmp-nvim-lsp",
       "hrsh7th/cmp-buffer",
       "hrsh7th/cmp-path",
+      "saadparwaiz1/cmp_luasnip",
     },
     config = function()
-      local cmp = require("cmp")
+      local cmp     = require("cmp")
+      local luasnip = require("luasnip")
       cmp.setup({
+        snippet = {
+          expand = function(args)
+            luasnip.lsp_expand(args.body)
+          end,
+        },
         mapping = cmp.mapping.preset.insert({
-          ["<Tab>"]     = cmp.mapping.select_next_item(),
-          ["<S-Tab>"]   = cmp.mapping.select_prev_item(),
+          ["<Tab>"]     = cmp.mapping(function(fallback)
+            if cmp.visible() then
+              cmp.select_next_item()
+            elseif luasnip.expand_or_jumpable() then
+              luasnip.expand_or_jump()
+            else
+              fallback()
+            end
+          end, { "i", "s" }),
+          ["<S-Tab>"]   = cmp.mapping(function(fallback)
+            if cmp.visible() then
+              cmp.select_prev_item()
+            elseif luasnip.jumpable(-1) then
+              luasnip.jump(-1)
+            else
+              fallback()
+            end
+          end, { "i", "s" }),
           ["<CR>"]      = cmp.mapping.confirm({ select = true }),
           ["<C-Space>"] = cmp.mapping.complete(),
           ["<C-e>"]     = cmp.mapping.abort(),
         }),
         sources = cmp.config.sources({
           { name = "nvim_lsp" },
-          { name = "buffer" },
-          { name = "path" },
+          { name = "luasnip"  },
+          { name = "buffer"   },
+          { name = "path"     },
         }),
         formatting = {
           format = function(entry, item)
-            local labels = { nvim_lsp = "[LSP]", buffer = "[Buf]", path = "[Path]" }
+            local labels = {
+              nvim_lsp = "[LSP]",
+              luasnip  = "[Snip]",
+              buffer   = "[Buf]",
+              path     = "[Path]",
+            }
             item.menu = labels[entry.source.name] or ""
             return item
           end,
@@ -190,6 +251,7 @@ vim.lsp.enable("pyright")
       })
     end,
   },
+
   -- ── File Tree ──────────────────────────────────────────────────────────
   {
     "nvim-tree/nvim-tree.lua",
