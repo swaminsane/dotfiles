@@ -1,34 +1,61 @@
 # ~/.bashrc: executed by bash(1) for non-login shells.
 # see /usr/share/doc/bash/examples/startup-files (in the package bash-doc)
 # for examples
+#
+# vim mode
+set -o vi
 
+#info panel
 
-# ~/.bashrc - add this block
-if [ -d "$HOME/bin" ]; then
-    PATH="$HOME/bin:$PATH"
-fi
+function __git_branch() {
+    local branch
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    [[ -n "$branch" ]] && echo " $branch"
+}
 
-if [ -d "$HOME/.local/bin" ]; then
-    PATH="$HOME/.local/bin:$PATH"
-fi
+function __git_dirty() {
+    [[ -n $(git status --porcelain 2>/dev/null) ]] && echo "dirty"
+}
 
-for dir in ~/.local/bin/*/; do
-    [ -d "$dir" ] && PATH="$dir:$PATH"
-done
+function __battery() {
+    local bat
+    bat=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || cat /sys/class/power_supply/BAT1/capacity 2>/dev/null)
+    [[ -n "$bat" ]] && echo "${bat}%" || echo "N/A"
+}
 
-export PATH
+function __set_prompt() {
+    local reset="\[\e[0m\]"
+    local path="\[\e[34m\]"
+    local git_clean="\[\e[35m\]"       # magenta - clean
+    local git_dirty="\[\e[38;5;208m\]" # orange - dirty
+    local time="\[\e[32m\]"
+    local batt="\[\e[33m\]"
+    local arrow="\[\e[36m\]"
 
+    local branch="$(__git_branch)"
+    local git_color="$git_clean"
+    [[ "$(__git_dirty)" == "dirty" ]] && git_color="$git_dirty"
 
+    local right_side="$(date +%H:%M) $(__battery)"
+    local cols=$(tput cols)
+    local left="${PWD/#$HOME/\~}${branch} "
+    local pad=$(( cols - ${#left} - ${#right_side} ))
+    local padding=$(printf '%*s' "$pad" '')
+
+    PS1="${path}\w${reset}${git_color}${branch}${reset}${padding}${time}$(date +%H:%M)${reset} ${batt}$(__battery)${reset}\n${arrow}>${reset} "
+}
+
+#st-samedir
 set_title() {
     dir=$(pwd | sed "s|$HOME|~|")
     echo -ne "\033]0;st: $dir\007"
 }
-PROMPT_COMMAND="pwd > /tmp/last_dir; set_title"
+PROMPT_COMMAND="__set_prompt; pwd > /tmp/last_dir; set_title"
 eval "$(zoxide init bash)"
 
 
 #Advance aliases
-vim() {
+v() {
   if [ "$#" -eq 0 ]; then
     nvim .
   else
@@ -93,33 +120,6 @@ esac
 # should be on the output of commands, not on the prompt
 #force_color_prompt=yes
 
-if [ -n "$force_color_prompt" ]; then
-    if [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
-	# We have color support; assume it's compliant with Ecma-48
-	# (ISO/IEC-6429). (Lack of such support is extremely rare, and such
-	# a case would tend to support setf rather than setaf.)
-	color_prompt=yes
-    else
-	color_prompt=
-    fi
-fi
-
-if [ "$color_prompt" = yes ]; then
-    PS1='${debian_chroot:+($debian_chroot)}\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
-else
-    PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
-fi
-unset color_prompt force_color_prompt
-
-# If this is an xterm set the title to user@host:dir
-case "$TERM" in
-xterm*|rxvt*)
-    PS1="\[\e]0;${debian_chroot:+($debian_chroot)}\u@\h: \w\a\]$PS1"
-    ;;
-*)
-    ;;
-esac
-
 # enable color support of ls and also add handy aliases
 if [ -x /usr/bin/dircolors ]; then
     test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"
@@ -151,7 +151,6 @@ if [ -f ~/.bash_aliases ]; then
     . ~/.bash_aliases
 fi
 
-PS1='\w > '
 # enable programmable completion features (you don't need to enable
 # this, if it's already enabled in /etc/bash.bashrc and /etc/profile
 # sources /etc/bash.bashrc).

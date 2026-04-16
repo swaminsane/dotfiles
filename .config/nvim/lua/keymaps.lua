@@ -36,3 +36,6 @@ map("n", "<leader>cw", ":w<CR>:!gcc -Wall -Wextra -g % -o %:r && ./%:r<CR>",
 
 -- Run Python
 map("n", "<leader>cp", ":w<CR>:belowright split | resize 15 | term python3 %<CR>i", { desc = "Run Python" })
+
+-- Toggle Terminal
+vim.keymap.set("n", "<leader>/", "<cmd>ToggleTerm<cr>", { desc = "Toggle terminal" })

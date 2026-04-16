@@ -1,3 +1,4 @@
+-- require("lazy").setup("plugins")
 require("options")
 require("fonts")
 require("keymaps")

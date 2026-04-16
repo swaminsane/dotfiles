@@ -176,6 +176,29 @@ require("lazy").setup({
     end,
   },
 
+-- Terminal toggle
+{
+  "akinsho/toggleterm.nvim",
+  version = "*",
+  config = function()
+    require("toggleterm").setup({
+      size = 15,
+      open_mapping = [[<C-\>]],
+      direction = "horizontal",
+      shade_terminals = true,
+      persist_size = true,
+      close_on_exit = true,
+    })
+
+    -- escape from terminal mode easily
+    vim.keymap.set("t", "<Esc>", [[<C-\><C-n>]], { desc = "Exit terminal mode" })
+    -- window navigation from terminal
+    vim.keymap.set("t", "<C-h>", [[<C-\><C-n><C-w>h]])
+    vim.keymap.set("t", "<C-j>", [[<C-\><C-n><C-w>j]])
+    vim.keymap.set("t", "<C-k>", [[<C-\><C-n><C-w>k]])
+    vim.keymap.set("t", "<C-l>", [[<C-\><C-n><C-w>l]])
+  end,
+},
   -- ── Snippets ───────────────────────────────────────────────────────────
   {
   "L3MON4D3/LuaSnip",
@@ -304,3 +327,41 @@ require("lazy").setup({
   },
 
 })
+
+-- Harpoon
+return {
+  {
+    "ThePrimeagen/harpoon",
+    branch = "harpoon2", -- recommended (new version)
+    dependencies = { "nvim-lua/plenary.nvim" },
+
+    config = function()
+      local harpoon = require("harpoon")
+
+      harpoon:setup()
+
+      -- Keymaps
+      vim.keymap.set("n", "<leader>a", function()
+        harpoon:list():append()
+      end)
+
+      vim.keymap.set("n", "<C-e>", function()
+        harpoon.ui:toggle_quick_menu(harpoon:list())
+      end)
+
+      -- Quick navigation
+      vim.keymap.set("n", "<C-h>", function()
+        harpoon:list():select(1)
+      end)
+      vim.keymap.set("n", "<C-t>", function()
+        harpoon:list():select(2)
+      end)
+      vim.keymap.set("n", "<C-n>", function()
+        harpoon:list():select(3)
+      end)
+      vim.keymap.set("n", "<C-s>", function()
+        harpoon:list():select(4)
+      end)
+    end,
+  },
+}
