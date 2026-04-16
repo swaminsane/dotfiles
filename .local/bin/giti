@@ -7,62 +7,91 @@ else
     GIT="git"
 fi
 
-if ! $GIT rev-parse --git-dir > /dev/null 2>&1; then
-    echo "Not a git repo."
-    exit 1
-fi
-
-mapfile -t files < <($GIT status --porcelain | awk '{print $2}')
-
-if [[ ${#files[@]} -eq 0 ]]; then
-    echo "Nothing to commit."
-    exit 0
-fi
-
-echo "Changed files:"
-for i in "${!files[@]}"; do
-    echo "  $((i+1))) ${files[$i]}"
-done
-
-echo ""
-echo -n "Stage files (numbers space-separated, . for all tracked, or path/dir to add new): "
-read -r selection
-
-if [[ "$selection" == "." ]]; then
-    $GIT add -u
-else
-    for token in $selection; do
-        if [[ "$token" =~ ^[0-9]+$ ]]; then
-            idx=$(( token - 1 ))
-            if [[ -n "${files[$idx]}" ]]; then
-                $GIT add "${files[$idx]}"
-            else
-                echo "Invalid number: $token, skipping."
-            fi
-        else
-            if [[ -e "$token" ]]; then
-                $GIT add "$token"
-            else
-                echo "Path not found: $token, skipping."
-            fi
+case "$1" in
+    rm)
+        shift
+        if [[ -z "$1" ]]; then
+            echo "Usage: giti [dots] rm <file>"
+            exit 1
         fi
-    done
-fi
+        $GIT rm --cached "$@"
+        ;;
+    restore)
+        shift
+        if [[ -z "$1" ]]; then
+            echo "Usage: giti [dots] restore <file>"
+            exit 1
+        fi
+        $GIT restore "$@"
+        ;;
+    stat)
+        $GIT status
+        ;;
+    "")
+        # Default: interactive commit flow
+        if ! $GIT rev-parse --git-dir > /dev/null 2>&1; then
+            echo "Not a git repo."
+            exit 1
+        fi
 
-echo ""
-echo -n "Commit message: "
-read -r msg
+        mapfile -t files < <($GIT status --porcelain | awk '{print $2}')
 
-if [[ -z "$msg" ]]; then
-    echo "Empty commit message, aborting."
-    exit 1
-fi
+        if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Nothing to commit."
+            exit 0
+        fi
 
-$GIT commit -m "$msg"
+        echo "Changed files:"
+        for i in "${!files[@]}"; do
+            echo "  $((i+1))) ${files[$i]}"
+        done
 
-echo ""
-echo -n "Push? (y/n): "
-read -r push
-if [[ "$push" == "y" ]]; then
-    $GIT push
-fi
+        echo ""
+        echo -n "Stage files (numbers space-separated, . for all tracked, or path/dir to add new): "
+        read -r selection
+
+        if [[ "$selection" == "." ]]; then
+            $GIT add -u
+        else
+            for token in $selection; do
+                if [[ "$token" =~ ^[0-9]+$ ]]; then
+                    idx=$(( token - 1 ))
+                    if [[ -n "${files[$idx]}" ]]; then
+                        $GIT add "${files[$idx]}"
+                    else
+                        echo "Invalid number: $token, skipping."
+                    fi
+                else
+                    if [[ -e "$token" ]]; then
+                        $GIT add "$token"
+                    else
+                        echo "Path not found: $token, skipping."
+                    fi
+                fi
+            done
+        fi
+
+        echo ""
+        echo -n "Commit message: "
+        read -r msg
+
+        if [[ -z "$msg" ]]; then
+            echo "Empty commit message, aborting."
+            exit 1
+        fi
+
+        $GIT commit -m "$msg"
+
+        echo ""
+        echo -n "Push? (y/n): "
+        read -r push
+        if [[ "$push" == "y" ]]; then
+            $GIT push
+        fi
+        ;;
+    *)
+        echo "Unknown flag: $1"
+        echo "Usage: giti [dots] [rm <file>|restore <file>|stat]"
+        exit 1
+        ;;
+esac
