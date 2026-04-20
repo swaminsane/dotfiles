@@ -68,7 +68,7 @@ alias rm="rm -I"
 alias shred="shred -v"
 alias yta="yt -x -f audbooks"
 alias adbc=".local/bin/adbc"
-alias apti="sudo apt install"
+alias ai="sudo apt install"
 alias f="lf"
 alias nano="nano -l"
 alias soundr="systemctl --user restart pipewire.service"
@@ -77,6 +77,7 @@ alias tmux='tmux -f ~/.config/tmux/tmux.conf'
 alias musicr='systemctl --user restart mpd && mpc update --wait && pkill ncmpcpp 2>/dev/null; ncmpcpp'
 alias suu="sudo apt update && sudo apt upgrade"
 alias e="emacs"
+alias la="ls -lha"
 # If not running interactively, don't do anything
 case $- in
     *i*) ;;

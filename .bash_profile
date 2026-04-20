@@ -3,11 +3,14 @@ if [ -z "$DISPLAY" ]; then
     case "$(tty)" in
         /dev/tty1)
             # Default: dwm
-            exec startx
+            exec startx ~/.xinitrc.muhh
             ;;
         /dev/tty2)
             # Plasma session on TTY2
             exec startx ~/.xinitrc.plasma
+            ;;
+        /dev/tty3)
+            exec startx ~/.xinitrc.dwm
             ;;
         *)
             # Other TTYs do nothing
@@ -15,3 +18,4 @@ if [ -z "$DISPLAY" ]; then
     esac
 fi
 
+. "$HOME/.cargo/env"

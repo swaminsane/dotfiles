@@ -7,7 +7,7 @@ DWM_DIR="$HOME/.local/src/dwm"
 DMENU_DIR="$HOME/.local/src/dmenu"
 TABBED_DIR="$HOME/.local/src/tabbed"
 THEME_FILE="$HOME/.config/theme/colors.h"
-
+MUHHWM_DIR="$HOME/.local/src/muhhwm"
 # ════════════════════════════════════════════════════════════════════════════
 # NAMED — well-known colorschemes
 # ════════════════════════════════════════════════════════════════════════════
@@ -760,8 +760,11 @@ esac
 
 echo "Applying theme: $CHOICE"
 
+# ── copy theme to muhhwm ─────────────────────────────────────────────────────
+cp "$THEME_FILE" "$MUHHWM_DIR/colors.h"
+
 # ── recompile ────────────────────────────────────────────────────────────────
-for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR"; do
+for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR" "$MUHHWM_DIR"; do
   name=$(basename $dir)
   echo "Building $name..."
   cd "$dir" && sudo make clean install

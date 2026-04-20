@@ -29,6 +29,7 @@ ST_DIR="$HOME/.local/src/st"
 DWM_DIR="$HOME/.local/src/dwm"
 DMENU_DIR="$HOME/.local/src/dmenu"
 TABBED_DIR="$HOME/.local/src/tabbed"
+MUHHWM_DIR="$HOME/.local/src/muhhwm/"
 
 # ── defaults ─────────────────────────────────────────────────────────────────
 FONT="JetBrains Mono"
@@ -143,7 +144,7 @@ EOF
 
   notify-send "fontmenu" "fonts.h written → building..."
 
-  for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR"; do
+  for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR" "$MUHHWM_DIR"; do
     name=$(basename "$dir")
     echo "Building $name..."
     notify-send "fontmenu" "building $name..."

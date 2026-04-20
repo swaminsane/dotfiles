@@ -22,3 +22,14 @@ if [ "$WM" = "dwm" ]; then
     nm-applet &
     /usr/bin/kdeconnectd &
 fi
+
+# Only run these in muhhwm
+if [ "$WM" = "muhhwm" ]; then
+    dwmblocks &
+    xsct 4200 &
+    dunst &
+    picom &
+    feh --bg-fill --randomize $HOME/.local/share/wallpapers/
+    nm-applet &
+    /usr/bin/kdeconnectd &
+fi
