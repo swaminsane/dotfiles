@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+import os
+import re
+import json
+import shutil
+import sqlite3
+from datetime import datetime
+from urllib.parse import unquote_plus
+
+# ----------------------------
+# CONFIG
+# ----------------------------
+FIREFOX_BASE = os.path.expanduser("~/.mozilla/firefox")
+OUTPUT_DIR = os.path.expanduser("~/.local/share/firefox/searches")
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ----------------------------
+# FIND FIREFOX PROFILE DB
+# ----------------------------
+def find_places_db():
+    candidates = []
+
+    if not os.path.isdir(FIREFOX_BASE):
+        raise FileNotFoundError("Firefox directory not found")
+
+    for profile in os.listdir(FIREFOX_BASE):
+        db_path = os.path.join(FIREFOX_BASE, profile, "places.sqlite")
+        if os.path.isfile(db_path):
+            candidates.append(db_path)
+
+    if not candidates:
+        raise FileNotFoundError("No places.sqlite found")
+
+    # pick most recently modified profile DB
+    return max(candidates, key=os.path.getmtime)
+
+# ----------------------------
+# SAFE COPY (avoid lock)
+# ----------------------------
+def copy_db(src):
+    tmp = "/tmp/firefox_places.sqlite"
+
+    if os.path.exists(tmp):
+        os.remove(tmp)
+
+    shutil.copy2(src, tmp)
+    return tmp
+
+# ----------------------------
+# ENGINE DETECTION
+# ----------------------------
+def detect_engine(url):
+    if "google." in url and "search" in url:
+        return "google"
+    if "youtube.com" in url and "search_query" in url:
+        return "youtube"
+    if "duckduckgo.com" in url:
+        return "duckduckgo"
+    return "other"
+
+# ----------------------------
+# CLEAN QUERY EXTRACTION
+# ----------------------------
+def extract_query(url):
+    try:
+        # REMOVE FRAGMENT (CRITICAL FIX)
+        url = url.split("#")[0]
+
+        if "google." in url:
+            m = re.search(r"q=([^&]+)", url)
+        elif "youtube.com" in url:
+            m = re.search(r"search_query=([^&]+)", url)
+        elif "duckduckgo.com" in url:
+            m = re.search(r"q=([^&]+)", url)
+        else:
+            return None
+
+        if not m:
+            return None
+
+        # decode + cleanup
+        return unquote_plus(m.group(1))
+
+    except:
+        return None
+
+# ----------------------------
+# TIMESTAMP (Firefox PRTime)
+# ----------------------------
+def convert_time(microseconds):
+    try:
+        return datetime.utcfromtimestamp(microseconds / 1_000_000).isoformat()
+    except:
+        return None
+
+# ----------------------------
+# LOAD DATA
+# ----------------------------
+def load_data(db_path):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    query = """
+    SELECT url, last_visit_date
+    FROM moz_places
+    WHERE url LIKE '%google%'
+       OR url LIKE '%youtube%'
+       OR url LIKE '%duckduckgo%'
+    ORDER BY last_visit_date DESC
+    """
+
+    cur.execute(query)
+
+    results = []
+
+    for url, ts in cur.fetchall():
+        engine = detect_engine(url)
+        q = extract_query(url)
+
+        if not q:
+            continue
+
+        results.append({
+            "engine": engine,
+            "query": q,
+            "url": url,
+            "timestamp": convert_time(ts) if ts else None
+        })
+
+    conn.close()
+    return results
+
+# ----------------------------
+# GROUP DATA
+# ----------------------------
+def group_data(data):
+    grouped = {
+        "google": [],
+        "youtube": [],
+        "duckduckgo": [],
+        "other": [],
+        "all": []
+    }
+
+    for item in data:
+        grouped[item["engine"]].append(item)
+        grouped["all"].append(item)
+
+    return grouped
+
+# ----------------------------
+# WRITE JSON FILES
+# ----------------------------
+def write_outputs(grouped):
+    for key, items in grouped.items():
+        path = os.path.join(OUTPUT_DIR, f"{key}.json")
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({
+                "engine": key,
+                "total_queries": len(items),
+                "queries": items if key != "all" else None,
+                "timeline": items if key == "all" else None
+            }, f, indent=2, ensure_ascii=False)
+
+# ----------------------------
+# MAIN
+# ----------------------------
+def main():
+    db = find_places_db()
+    tmp = copy_db(db)
+
+    data = load_data(tmp)
+    grouped = group_data(data)
+
+    write_outputs(grouped)
+
+    print(f"[OK] Exported to: {OUTPUT_DIR}")
+
+if __name__ == "__main__":
+    main()
