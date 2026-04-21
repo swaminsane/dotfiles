@@ -25,7 +25,6 @@ fi
 
 # Only run these in muhhwm
 if [ "$WM" = "muhhwm" ]; then
-    dwmblocks &
     xsct 4200 &
     dunst &
     picom &

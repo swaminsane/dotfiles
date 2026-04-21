@@ -256,7 +256,7 @@ handle_wifi() {
 # =============================================================================
 handle_bluetooth() {
     local opt
-    opt=$(printf "Turn On\nTurn Off\nConnect\nDisconnect\nStatus\nCancel" \
+    opt=$(printf "Connect\nTurn On\nTurn Off\nDisconnect\nStatus\nCancel" \
         | _dmenu "Bluetooth:")
     [[ -z "$opt" || "$opt" == "Cancel" ]] && return 0
 
