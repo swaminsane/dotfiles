@@ -4,7 +4,7 @@
 #
 # vim mode
 set -o vi
-
+export EDITOR=nvim
 #info panel
 
 function __git_branch() {
@@ -78,6 +78,7 @@ alias musicr='systemctl --user restart mpd && mpc update --wait && pkill ncmpcpp
 alias suu="sudo apt update && sudo apt upgrade"
 alias e="emacs"
 alias la="ls -lha"
+alias remake="sudo make clean install"
 # If not running interactively, don't do anything
 case $- in
     *i*) ;;

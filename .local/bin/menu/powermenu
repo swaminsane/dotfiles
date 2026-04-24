@@ -2,7 +2,7 @@
 case "$(echo "Shutdown\nRestart\nLogoff\nSleep\nHibernate\nLock" | dmenu -i -p "Power Menu")" in
     Shutdown) systemctl poweroff;;
     Restart) systemctl reboot;;
-    Logoff) pkill dwm;;
+    Logoff) pkill dwm || pkill muhhwm;;
     Sleep)  systemctl suspend;;
     Hibernate)  systemctl hibernate;;
     Lock) slock;;

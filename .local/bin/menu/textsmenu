@@ -71,8 +71,12 @@ open_file() {
 menu_items=$(printf '%s\n' "${!LIBRARIES[@]}" | sort)
 [[ -f "$RECENT_FILE" && -s "$RECENT_FILE" ]] && menu_items=$'Recent\n'"$menu_items"
 
-section=$(printf '%s\n' "$menu_items" | dmenu_pick "Library: ") || exit 0
-[[ -z "$section" ]] && exit 0
+if [[ -n "$1" ]]; then
+    section="$1"
+else
+    section=$(printf '%s\n' "$menu_items" | dmenu_pick "Library: ") || exit 0
+    [[ -z "$section" ]] && exit 0
+fi
 
 # ── Recent branch ─────────────────────────────────────────────────────────────
 if [[ "$section" == "Recent" ]]; then

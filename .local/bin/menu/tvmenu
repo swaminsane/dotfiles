@@ -129,7 +129,9 @@ play_channel() {
     url="$2"
 
     notify "Playing: $channel"
+    echo "$channel" > /tmp/tvapp.state
     $PLAYER "$url"
+    rm -f /tmp/tvapp.state
 }
 
 # ========= CHANNELS =========
