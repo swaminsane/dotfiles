@@ -1,0 +1,348 @@
+#!/bin/bash
+set -euo pipefail
+
+CONTACTS_FILE="$HOME/.cache/contacts.conf"
+LOG_FILE="$HOME/.cache/sms.log"
+DEVICE_CACHE="$HOME/.cache/sms.device"
+KDE_DEVICE=""
+DRY_RUN=false
+
+# ── Help ─────────────────────────────────────────────────────
+usage() {
+    cat <<'EOF'
+sms — send SMS via KDE Connect, manage contacts & groups, make calls
+
+USAGE
+  sms [options] [recipients...] "message"
+  sms [options] @name|%group                 show contact/group info
+  sms -a @name +number                       add a contact
+  sms -a %group @member1 @member2 ...        add / overwrite a group
+  sms -r @name|%group                        remove a contact/group
+  sms -l [@|%]                               list contacts / groups
+  sms +123456789 "message"                   send to raw number
+
+  sms -c @name                               call a saved contact
+  sms -c +123456789                          call a raw number
+
+OPTIONS
+  -a, --add       add a contact or group
+  -r, --remove    remove a contact or group
+  -l, --list      list contacts / groups
+  -c, --call      call a contact or number
+  -n, --dry-run   show what would be sent / called
+  -h, --help      show this help and exit
+EOF
+}
+
+[[ $# -eq 0 ]] && { echo "sms — send SMS via KDE Connect. Try 'sms --help'."; exit 0; }
+
+OPTS=$(getopt -o a:r:c:lnh --long add:,remove:,call:,list,dry-run,help -n 'sms' -- "$@")
+eval set -- "$OPTS"
+
+ACTION=""
+ADD_ENTRY=""
+REMOVE_ENTRY=""
+CALL_ENTRY=""
+LIST_FILTER=""
+
+while true; do
+    case "$1" in
+        -a|--add)    ACTION="add";    ADD_ENTRY="$2"; shift 2 ;;
+        -r|--remove) ACTION="remove"; REMOVE_ENTRY="$2"; shift 2 ;;
+        -c|--call)   ACTION="call";   CALL_ENTRY="$2"; shift 2 ;;
+        -l|--list)   ACTION="list";   LIST_FILTER="${2:-all}"; shift ;;
+        -n|--dry-run) DRY_RUN=true;   shift ;;
+        -h|--help)   usage; exit 0 ;;
+        --) shift; break ;;
+        *) echo "Internal error!" >&2; exit 1 ;;
+    esac
+done
+
+# ── Contact loader (used for add / remove / send) ────────────
+load_contacts() {
+    unset PHONE GROUP
+    declare -gA PHONE GROUP
+
+    [[ ! -f "$CONTACTS_FILE" ]] && {
+        mkdir -p "$(dirname "$CONTACTS_FILE")"
+        touch "$CONTACTS_FILE"
+        return
+    }
+
+    while IFS= read -r line; do
+        line=$(echo "$line" | sed 's/^[ \t]*//;s/[ \t]*$//')
+        [[ -z "$line" || "$line" =~ ^#\  || "$line" == "#" ]] && continue
+
+        read -r prefix rest <<< "$line"
+
+        if [[ "$prefix" == @* ]]; then
+            local name="${prefix#@}"
+            PHONE["$name"]="$rest"
+        elif [[ "$prefix" == [%#]* ]]; then
+            local grp="${prefix#[%#]}"
+            GROUP["$grp"]="$rest"
+        fi
+    done < "$CONTACTS_FILE"
+}
+
+save_contacts() {
+    > "$CONTACTS_FILE"
+    for name in "${!PHONE[@]}"; do printf "@%s %s\n" "$name" "${PHONE[$name]}"; done | sort >> "$CONTACTS_FILE"
+    for grp in "${!GROUP[@]}"; do printf "%%%s %s\n" "$grp" "${GROUP[$grp]}"; done | sort >> "$CONTACTS_FILE"
+}
+
+expand_token() {
+    local tok="$1"
+    [[ "$tok" =~ ^\+?[0-9]+$ ]] && { echo "$tok"; return; }
+    if [[ "$tok" == @* ]]; then
+        local name="${tok#@}"
+        [[ -n "${PHONE[$name]:-}" ]] && { echo "${PHONE[$name]}"; return; }
+        echo "sms: unknown contact '$tok'" >&2; return 1
+    fi
+    if [[ "$tok" == %* ]]; then
+        local grp="${tok#%}"
+        if [[ -n "${GROUP[$grp]:-}" ]]; then
+            for member in ${GROUP[$grp]}; do
+                expand_token "$member" || return 1
+            done
+            return
+        fi
+        echo "sms: unknown group '$tok'" >&2; return 1
+    fi
+    echo "sms: invalid recipient '$tok'" >&2; return 1
+}
+
+resolve_recipients() {
+    local phones=""
+    for tok in "$@"; do
+        phones+=$(expand_token "$tok")$'\n' || return 1
+    done
+    echo "$phones" | sort -u | grep -v '^$'
+}
+
+get_device() {
+    [[ -n "$KDE_DEVICE" ]] && { echo "$KDE_DEVICE"; return; }
+    if [[ -f "$DEVICE_CACHE" ]]; then
+        local cached=$(<"$DEVICE_CACHE")
+        kdeconnect-cli -l --id-only 2>/dev/null | grep -qFx "$cached" && { echo "$cached"; return; }
+    fi
+    local dev=$(kdeconnect-cli -l --id-only 2>/dev/null | head -1)
+    [[ -z "$dev" ]] && { echo "sms: no KDE Connect device found." >&2; exit 1; }
+    echo "$dev" | tee "$DEVICE_CACHE" >/dev/null
+    echo "$dev"
+}
+
+send_one() {
+    local num="$1" msg="$2" dev="$3"
+    $DRY_RUN && { echo "[dry-run] kdeconnect-cli -d $dev --send-sms \"$msg\" --destination \"$num\""; return 0; }
+    kdeconnect-cli -d "$dev" --send-sms "$msg" --destination "$num"
+}
+
+log_message() {
+    local recipients="$1" msg="$2" status="$3"
+    local ts=$(date '+%Y-%m-%d %H:%M')
+    mkdir -p "$(dirname "$LOG_FILE")"
+    echo "[$ts] $recipients [$status] \"$msg\"" >> "$LOG_FILE"
+}
+
+# ── Call handler ─────────────────────────────────────────────
+cmd_call() {
+    local token="$1"
+
+    # Disallow groups
+    if [[ "$token" == %* ]]; then
+        echo "sms: cannot call a group." >&2
+        exit 1
+    fi
+
+    local number
+    if [[ "$token" == @* ]]; then
+        local name="${token#@}"
+        if [[ ! -f "$CONTACTS_FILE" ]]; then
+            echo "sms: contacts file not found." >&2
+            exit 1
+        fi
+        number=$(grep -E "^@$name[[:space:]]" "$CONTACTS_FILE" | awk '{print $2}')
+        if [[ -z "$number" ]]; then
+            echo "sms: contact @$name not found." >&2
+            exit 1
+        fi
+    elif [[ "$token" =~ ^\+?[0-9]+$ ]]; then
+        number="$token"
+    else
+        echo "sms: invalid call recipient. Use @contact or +number." >&2
+        exit 1
+    fi
+
+    if ! command -v adb &>/dev/null; then
+        echo "sms: adb not found. Install Android platform-tools." >&2
+        exit 1
+    fi
+
+    if $DRY_RUN; then
+        echo "[dry-run] adb wait-for-device && adb shell am start -a android.intent.action.CALL -d tel:$number"
+        return
+    fi
+
+    adb wait-for-device
+    adb shell am start -a android.intent.action.CALL -d "tel:$number"
+
+    # Notification
+    local msg="Calling $token → $number"
+    echo "$msg"
+    if command -v notify-send &>/dev/null; then
+        notify-send "SMS Call" "$msg" --icon=dialer
+    fi
+}
+
+# ── Command handlers ─────────────────────────────────────────
+cmd_add() {
+    local entry="$1"; shift
+    if [[ "$entry" == @* ]]; then
+        local name="${entry#@}" number="$1"
+        [[ ! "$number" =~ ^\+?[0-9]+$ ]] && { echo "sms: invalid number '$number'" >&2; exit 1; }
+        load_contacts
+        PHONE["$name"]="$number"
+        save_contacts
+        echo "Contact @$name added / updated."
+    elif [[ "$entry" == %* ]]; then
+        local grp="${entry#%}"
+        load_contacts
+        GROUP["$grp"]="$*"
+        save_contacts
+        echo "Group %$grp updated."
+    else
+        echo "sms: use '@name' for contact, '%group' for group." >&2; exit 1
+    fi
+}
+
+cmd_remove() {
+    local entry="$1"
+    load_contacts
+    if [[ "$entry" == @* ]]; then
+        local name="${entry#@}"
+        [[ -z "${PHONE[$name]:-}" ]] && { echo "sms: contact @$name not found." >&2; exit 1; }
+        unset "PHONE[$name]"
+        save_contacts
+        echo "Contact @$name removed."
+    elif [[ "$entry" == %* ]]; then
+        local grp="${entry#%}"
+        [[ -z "${GROUP[$grp]:-}" ]] && { echo "sms: group %$grp not found." >&2; exit 1; }
+        unset "GROUP[$grp]"
+        save_contacts
+        echo "Group %$grp removed."
+    else
+        echo "sms: use @name or %group to remove." >&2; exit 1
+    fi
+}
+
+cmd_list() {
+    if [[ ! -f "$CONTACTS_FILE" ]]; then
+        echo "No contacts file yet."
+        exit 0
+    fi
+
+    local filter="${1:-all}"
+    local data
+    data=$(grep -v '^# ' "$CONTACTS_FILE" 2>/dev/null || true)
+
+    if [[ -z "$data" ]]; then
+        echo "No contacts or groups found."
+        echo "  sms -a @name +1234567890"
+        echo "  sms -a %group @member1 @member2"
+        exit 0
+    fi
+
+    case "$filter" in
+        all) echo "$data" ;;
+        @)   echo "$data" | grep '^@' || echo "(no contacts)" ;;
+        %)   echo "$data" | grep '^%' || echo "(no groups)" ;;
+        *)   echo "$data" ;;
+    esac
+}
+
+cmd_show() {
+    local entry="$1"
+    load_contacts
+    if [[ "$entry" == @* ]]; then
+        local name="${entry#@}"
+        [[ -z "${PHONE[$name]:-}" ]] && { echo "sms: unknown contact @$name" >&2; exit 1; }
+        echo "@$name: ${PHONE[$name]}"
+    elif [[ "$entry" == %* ]]; then
+        local grp="${entry#%}"
+        [[ -z "${GROUP[$grp]:-}" ]] && { echo "sms: unknown group %$grp" >&2; exit 1; }
+        echo "%$grp: ${GROUP[$grp]}"
+    else
+        echo "sms: use @contact or %group to view details." >&2; exit 1
+    fi
+}
+
+cmd_send() {
+    local recipients=() msg=""
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == @* || "$1" == %* || "$1" =~ ^\+?[0-9]+$ ]]; then
+            recipients+=("$1")
+        else
+            msg="$1"
+        fi
+        shift
+    done
+
+    [[ ${#recipients[@]} -eq 0 ]] && { echo "sms: no recipients." >&2; exit 1; }
+    [[ -z "$msg" ]] && { echo "sms: no message." >&2; exit 1; }
+
+    load_contacts
+    local device=$(get_device)
+
+    local numbers
+    numbers=$(resolve_recipients "${recipients[@]}") || exit 1
+    [[ -z "$numbers" ]] && { echo "sms: no valid numbers." >&2; exit 1; }
+
+    local nums_array=()
+    while IFS= read -r num; do nums_array+=("$num"); done <<< "$numbers"
+    local total="${#nums_array[@]}"
+
+    local pids=()
+    for num in "${nums_array[@]}"; do
+        send_one "$num" "$msg" "$device" &
+        pids+=($!)
+    done
+
+    local statuses=()
+    for pid in "${pids[@]}"; do
+        wait "$pid"
+        statuses+=($?)
+    done
+
+    local failed=0
+    for st in "${statuses[@]}"; do
+        [[ $st -ne 0 ]] && ((failed++))
+    done
+
+    local status="OK"
+    [[ $failed -gt 0 ]] && status="FAIL ($failed/$total)"
+
+    local recip_str="${recipients[*]}"
+    log_message "$recip_str" "$msg" "$status"
+    echo "Sent: $recip_str → \"$msg\" [$status]"
+
+    if command -v notify-send &>/dev/null; then
+        notify-send "SMS Sent" "$recip_str → \"$msg\"  [$status]" --icon=dialog-information
+    fi
+}
+
+# ── Dispatcher ────────────────────────────────────────────────
+case "${ACTION:-}" in
+    add)    [[ $# -eq 0 ]] && { echo "sms: missing arguments for --add." >&2; exit 1; }
+            cmd_add "$ADD_ENTRY" "$@" ;;
+    remove) [[ $# -ne 0 ]] && { echo "sms: remove takes exactly one argument after -r." >&2; exit 1; }
+            cmd_remove "$REMOVE_ENTRY" ;;
+    call)   cmd_call "$CALL_ENTRY" ;;
+    list)   cmd_list "$LIST_FILTER" ;;
+    *)      [[ $# -eq 0 ]] && { usage; exit 0; }
+            if [[ $# -eq 1 ]] && { [[ "$1" == @* || "$1" == %* ]]; }; then
+                cmd_show "$1"
+            else
+                cmd_send "$@"
+            fi ;;
+esac

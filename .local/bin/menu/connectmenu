@@ -1,29 +1,46 @@
 #!/usr/bin/env bash
 # =============================================================================
-# network-manager.sh — dmenu Wi-Fi & Bluetooth controller
+# network-menu — Wi‑Fi & Bluetooth controller (dmenu‑frontend)
 #
-# Dependencies: nmcli, rfkill, systemctl, bluetoothctl, notify-send, dmenu
+# Usage:
+#   network-menu                        → full interactive menu
+#   network-menu --wifi                 → Wi‑Fi submenu only
+#   network-menu --bluetooth            → Bluetooth submenu only
+#   network-menu --wifi-toggle          → toggle Wi‑Fi radio directly
+#   network-menu --wifi-connect <ssid>  → connect to <ssid> (may ask password)
+#   network-menu --wifi-disconnect      → disconnect current Wi‑Fi
+#   network-menu --bt-toggle            → toggle BT radio
+#   network-menu --bt-connect <dev>     → connect to device <dev>
+#   network-menu --bt-disconnect <dev>  → disconnect device <dev>
+#
+# Dependencies: nmcli, bluetoothctl, rfkill, notify-send, dmenu
 # =============================================================================
 
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 
+set -o pipefail
+
 # ---------------------------------------------------------------------------
-# CONFIG — tweak to match your rice
+# CONFIG
 # ---------------------------------------------------------------------------
 DMENU_LINES=12
 DMENU_PROMPT_ARGS=(-i)
 NOTIFY_TIMEOUT=4000
+
+# Colours for dmenu (optional – set empty to disable)
+# DMENU_COLORS="-nb '#2e3440' -nf '#d8dee9' -sb '#88c0d0' -sf '#2e3440'"
+DMENU_COLORS=""
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 _dmenu() {
     local prompt="$1"; shift
-    dmenu "${DMENU_PROMPT_ARGS[@]}" -p "$prompt" "$@"
+    dmenu ${DMENU_COLORS:+"$DMENU_COLORS"} "${DMENU_PROMPT_ARGS[@]}" -p "$prompt" "$@"
 }
 
 _notify() {
-    notify-send --expire-time="$NOTIFY_TIMEOUT" "$1" "${2:-}"
+    notify-send --expire-time="$NOTIFY_TIMEOUT" "$1" "${2:-}" 2>/dev/null || true
 }
 
 _require() {
@@ -33,6 +50,9 @@ _require() {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Pre‑flight checks
+# ---------------------------------------------------------------------------
 _require nmcli
 _require bluetoothctl
 _require rfkill
@@ -40,308 +60,432 @@ _require notify-send
 _require dmenu
 
 # =============================================================================
-# TOP-LEVEL MENU
+# WI‑FI HELPERS
 # =============================================================================
-CHOICE=$(printf "Wi-Fi\nBluetooth\nCancel" | _dmenu "Network:")
-[[ -z "$CHOICE" || "$CHOICE" == "Cancel" ]] && exit 0
+
+# Returns 0 if wifi radio is on
+wifi_is_on() {
+    [[ $(nmcli radio wifi 2>/dev/null) == "enabled" ]]
+}
+
+# Get current connected SSID (empty if none)
+wifi_connected_ssid() {
+    nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | awk -F: '/^yes/ {print $2; exit}'
+}
+
+# Get signal strength of connected network (0-100)
+wifi_signal() {
+    nmcli -t -f ACTIVE,SIGNAL dev wifi 2>/dev/null | awk -F: '/^yes/ {print $2; exit}'
+}
+
+# Generate a list of "SSID (signal%)" – deduplicated, best signal kept
+wifi_scan_list() {
+    nmcli -g SSID,SIGNAL dev wifi list 2>/dev/null \
+        | awk -F: '
+            NF>=2 {
+                sig = $NF
+                ssid = ""
+                for (i=1; i<NF; i++) ssid = ssid (i==1?"":":") $i
+                if (ssid != "" && ssid != "--")
+                    print sig " " ssid
+            }
+        ' \
+        | sort -rn \
+        | awk '!seen[$2]++ { printf "%s %s\n", $1, $2 }'
+}
+
+# Get all saved Wi‑Fi profile names
+wifi_saved_profiles() {
+    nmcli -g NAME,TYPE connection show 2>/dev/null \
+        | awk -F: '$2=="802-11-wireless" { print $1 }'
+}
 
 # =============================================================================
-# WI-FI
+# WI‑FI ACTIONS
 # =============================================================================
-handle_wifi() {
-    local opt
-    opt=$(printf "Connect\nDisconnect\nTurn On\nTurn Off\nStatus\nCancel" \
-        | _dmenu "Wi-Fi:")
-    [[ -z "$opt" || "$opt" == "Cancel" ]] && return 0
 
-    case "$opt" in
+# Toggle radio on/off
+action_wifi_toggle() {
+    if wifi_is_on; then
+        nmcli radio wifi off || { _notify "Wi‑Fi" "Failed to turn off"; return 1; }
+        _notify "Wi‑Fi" "Radio disabled"
+    else
+        nmcli radio wifi on || { _notify "Wi‑Fi" "Failed to turn on"; return 1; }
+        _notify "Wi‑Fi" "Radio enabled"
+    fi
+}
 
-    # ------------------------------------------------------------------
-    "Turn On")
-        nmcli radio wifi on \
-            && _notify "Wi-Fi" "Radio enabled" \
-            || _notify "Wi-Fi" "Failed to enable radio"
-        ;;
+# Connect to a specific SSID (will prompt for password if needed)
+action_wifi_connect() {
+    local target_ssid="$1"
+    [[ -z "$target_ssid" ]] && { _notify "Wi‑Fi" "No SSID given"; return 1; }
 
-    # ------------------------------------------------------------------
-    "Turn Off")
-        nmcli radio wifi off \
-            && _notify "Wi-Fi" "Radio disabled" \
-            || _notify "Wi-Fi" "Failed to disable radio"
-        ;;
+    if ! wifi_is_on; then
+        _notify "Wi‑Fi" "Radio is off — turn it on first"
+        return 1
+    fi
 
-    # ------------------------------------------------------------------
-    "Connect")
-        # Make sure wifi radio is on
-        if [[ $(nmcli radio wifi) != "enabled" ]]; then
-            _notify "Wi-Fi" "Radio is off — turn it on first"
-            return 0
+    # Check if it's a saved profile
+    if wifi_saved_profiles | grep -qxF "$target_ssid"; then
+        _notify "Wi‑Fi" "Connecting to $target_ssid…"
+        if nmcli connection up id "$target_ssid" 2>/dev/null; then
+            _notify "Wi‑Fi" "Connected to $target_ssid"
+        else
+            _notify "Wi‑Fi" "Connection failed — try 'Forget & Reconnect'"
         fi
+        return
+    fi
 
-        # Rescan (best-effort; ignore errors)
-        nmcli dev wifi rescan 2>/dev/null || true
-        sleep 1
+    # Determine if it's an open network
+    local security
+    security=$(nmcli -t -f SSID,SECURITY dev wifi list 2>/dev/null \
+        | awk -F: -v target="$target_ssid" '$1 == target {print $2; exit}')
 
-        # ---- Build SSID list ------------------------------------------------
-        local raw_scan
-        raw_scan=$(nmcli -g SSID,SIGNAL dev wifi list 2>/dev/null || true)
-
-        if [[ -z "$raw_scan" ]]; then
-            _notify "Wi-Fi" "No networks found — is the radio on?"
-            return 0
+    if [[ "$security" == "open" || "$security" == "--" || -z "$security" ]]; then
+        _notify "Wi‑Fi" "Connecting to $target_ssid…"
+        if nmcli dev wifi connect "$target_ssid" 2>/dev/null; then
+            _notify "Wi‑Fi" "Connected to $target_ssid"
+        else
+            _notify "Wi‑Fi" "Failed to connect to $target_ssid"
         fi
+    else
+        local password
+        password=$(_dmenu "Password for '$target_ssid':" < /dev/null)
+        [[ -z "$password" ]] && return 1
 
-        # Build "signal SSID" lines, deduplicate keeping best signal
-        local scored_ssids
-        scored_ssids=$(echo "$raw_scan" \
-            | awk -F: '
-                NF>=2 {
-                    sig = $NF
-                    ssid = ""
-                    for (i=1; i<NF; i++) ssid = ssid (i==1?"":":") $i
-                    if (ssid != "" && ssid != "--")
-                        print sig " " ssid
-                }
-            ' \
-            | sort -rn \
-            | awk '!seen[$2]++')
-
-        if [[ -z "$scored_ssids" ]]; then
-            _notify "Wi-Fi" "No visible networks found"
-            return 0
+        _notify "Wi‑Fi" "Connecting to $target_ssid…"
+        if nmcli dev wifi connect "$target_ssid" password "$password" 2>/dev/null; then
+            _notify "Wi‑Fi" "Connected to $target_ssid"
+        else
+            _notify "Wi‑Fi" "Wrong password or connection failed"
         fi
+    fi
+}
 
-        # ---- Mark saved profiles --------------------------------------------
-        local saved_profiles
-        saved_profiles=$(nmcli -g NAME,TYPE connection show 2>/dev/null \
-            | awk -F: '$2=="802-11-wireless" { print $1 }' || true)
+# Disconnect current Wi‑Fi
+action_wifi_disconnect() {
+    local conn
+    conn=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+        | awk -F: '$2=="802-11-wireless" { print $1; exit }')
 
-        # Ensure no wrong interface binding on any saved wifi profile
-        echo "$saved_profiles" | while read -r name; do
-            nmcli connection modify "$name" connection.interface-name "" 2>/dev/null || true
-        done
+    if [[ -n "$conn" ]]; then
+        nmcli connection down "$conn" 2>/dev/null \
+            && _notify "Wi‑Fi" "Disconnected from $conn" \
+            || _notify "Wi‑Fi" "Failed to disconnect $conn"
+    else
+        local dev
+        dev=$(nmcli -t -f DEVICE,TYPE,STATE dev 2>/dev/null \
+            | awk -F: '$2=="wifi" && $3=="connected" { print $1; exit }')
+        if [[ -n "$dev" ]]; then
+            nmcli device disconnect "$dev" 2>/dev/null \
+                && _notify "Wi‑Fi" "Disconnected ($dev)" \
+                || _notify "Wi‑Fi" "Failed to disconnect $dev"
+        else
+            _notify "Wi‑Fi" "No active Wi‑Fi connection"
+        fi
+    fi
+}
 
-        # Build display list with [saved] tag and signal %
-        local display_list
-        display_list=$(echo "$scored_ssids" | while read -r sig ssid; do
-            if echo "$saved_profiles" | grep -qxF "$ssid"; then
-                printf "[saved] %-36s %s%%\n" "$ssid" "$sig"
-            else
-                printf "        %-36s %s%%\n" "$ssid" "$sig"
+# =============================================================================
+# INTERACTIVE WI‑FI MENU
+# =============================================================================
+interactive_wifi() {
+    while true; do
+        local opt
+        opt=$(printf "Connect\nDisconnect\nTurn On\nTurn Off\nStatus\nSaved Networks\nForget Network\nBack" \
+            | _dmenu "Wi‑Fi:")
+        [[ -z "$opt" || "$opt" == "Back" ]] && return 0
+
+        case "$opt" in
+        "Turn On")
+            nmcli radio wifi on 2>/dev/null \
+                && _notify "Wi‑Fi" "Radio enabled" \
+                || _notify "Wi‑Fi" "Failed to enable radio"
+            ;;
+
+        "Turn Off")
+            nmcli radio wifi off 2>/dev/null \
+                && _notify "Wi‑Fi" "Radio disabled" \
+                || _notify "Wi‑Fi" "Failed to disable radio"
+            ;;
+
+        "Connect")
+            if ! wifi_is_on; then
+                _notify "Wi‑Fi" "Radio is off — turn it on first"
+                continue
             fi
-        done)
 
-        # ---- dmenu pick -----------------------------------------------------
-        local selected
-        selected=$(echo "$display_list" | _dmenu "Select network:" -l "$DMENU_LINES")
-        [[ -z "$selected" ]] && return 0
+            # Rescan
+            nmcli dev wifi rescan 2>/dev/null || true
+            sleep 1.5
 
-        # Extract SSID: strip prefix tag and trailing " XX%"
-        local ssid
-        ssid=$(echo "$selected" \
-            | sed 's/^\[saved\] //; s/^        //' \
-            | sed 's/[[:space:]]*[0-9]\+%[[:space:]]*$//' \
-            | sed 's/[[:space:]]*$//')
+            local list
+            list=$(wifi_scan_list)
+            if [[ -z "$list" ]]; then
+                _notify "Wi‑Fi" "No networks found"
+                continue
+            fi
 
-        [[ -z "$ssid" ]] && { _notify "Wi-Fi" "Could not parse SSID"; return 1; }
+            local saved
+            saved=$(wifi_saved_profiles)
 
-        # ---- Connect logic --------------------------------------------------
-
-        # Saved profile → offer Reconnect or Forget & Reconnect
-        if echo "$saved_profiles" | grep -qxF "$ssid"; then
-            local action
-            action=$(printf "Reconnect\nForget & Reconnect\nCancel" \
-                | _dmenu "'$ssid':")
-            [[ -z "$action" || "$action" == "Cancel" ]] && return 0
-
-            if [[ "$action" == "Forget & Reconnect" ]]; then
-                # Delete saved profile and fall through to fresh password prompt
-                nmcli connection delete "$ssid" 2>/dev/null || true
-                _notify "Wi-Fi" "Forgotten $ssid — enter new password"
-            else
-                # Normal reconnect — no password prompt
-                _notify "Wi-Fi" "Connecting to $ssid…"
-                if nmcli connection up id "$ssid"; then
-                    _notify "Wi-Fi" "Connected to $ssid"
+            # Build display: [saved] SSID (sig%)
+            local display
+            display=$(echo "$list" | while read -r sig ssid; do
+                if echo "$saved" | grep -qxF "$ssid"; then
+                    printf "[saved] %-36s %s%%\n" "$ssid" "$sig"
                 else
-                    _notify "Wi-Fi" "Failed — try 'Forget & Reconnect' to update password"
+                    printf "        %-36s %s%%\n" "$ssid" "$sig"
                 fi
-                return 0
-            fi
-        fi
+            done)
 
-        # New network (or just forgotten) — check open vs secured
-        local security
-        security=$(nmcli --fields SSID,SECURITY dev wifi list 2>/dev/null \
-            | tail -n +2 \
-            | awk -v target="$ssid" '
-                {
-                    sec = $NF
-                    ssid_col = $0
-                    sub(/[[:space:]]+[^[:space:]]+$/, "", ssid_col)
-                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", ssid_col)
-                    if (ssid_col == target) { print sec; exit }
-                }
-            ')
+            local selected
+            selected=$(echo "$display" | _dmenu "Select network:" -l "$DMENU_LINES")
+            [[ -z "$selected" ]] && continue
 
-        if [[ "$security" == "--" || -z "$security" ]]; then
-            _notify "Wi-Fi" "Connecting to $ssid…"
-            if nmcli dev wifi connect "$ssid"; then
-                _notify "Wi-Fi" "Connected to $ssid"
+            local ssid
+            ssid=$(echo "$selected" \
+                | sed 's/^\[saved\] //; s/^        //' \
+                | sed 's/[[:space:]]*[0-9]\+%[[:space:]]*$//' \
+                | sed 's/[[:space:]]*$//')
+
+            [[ -z "$ssid" ]] && continue
+
+            # Saved profile? Offer reconnect or forget
+            if echo "$saved" | grep -qxF "$ssid"; then
+                local action
+                action=$(printf "Reconnect\nForget & Reconnect\nCancel" \
+                    | _dmenu "'$ssid':")
+                [[ -z "$action" || "$action" == "Cancel" ]] && continue
+
+                if [[ "$action" == "Forget & Reconnect" ]]; then
+                    nmcli connection delete "$ssid" 2>/dev/null || true
+                    _notify "Wi‑Fi" "Forgotten $ssid — entering new password"
+                    action_wifi_connect "$ssid"
+                else
+                    action_wifi_connect "$ssid"
+                fi
             else
-                _notify "Wi-Fi" "Failed to connect to $ssid"
+                action_wifi_connect "$ssid"
             fi
-        else
-            local password
-            password=$(printf "" | _dmenu "Password for '$ssid':")
-            [[ -z "$password" ]] && return 0
+            ;;
 
-            _notify "Wi-Fi" "Connecting to $ssid…"
-            if nmcli dev wifi connect "$ssid" password "$password"; then
-                _notify "Wi-Fi" "Connected to $ssid"
+        "Disconnect")
+            action_wifi_disconnect
+            ;;
+
+        "Status")
+            local ssid signal ip
+            ssid=$(wifi_connected_ssid)
+            if [[ -n "$ssid" ]]; then
+                signal=$(wifi_signal)
+                ip=$(nmcli -t -f IP4.ADDRESS dev show 2>/dev/null | awk -F: 'NR==1 { print $2 }')
+                printf "%s  sig:%s%%  %s" "$ssid" "$signal" "$ip" \
+                    | _dmenu "Wi‑Fi Status:" -l 1
             else
-                _notify "Wi-Fi" "Wrong password or connection failed"
+                printf "Not connected" | _dmenu "Wi‑Fi Status:" -l 1
             fi
-        fi
-        ;;
+            ;;
 
-    # ------------------------------------------------------------------
-    "Disconnect")
-        local conn
-        conn=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
-            | awk -F: '$2=="802-11-wireless" { print $1; exit }')
-
-        if [[ -z "$conn" ]]; then
-            local dev
-            dev=$(nmcli -t -f DEVICE,TYPE,STATE dev 2>/dev/null \
-                | awk -F: '$2=="wifi" && $3=="connected" { print $1; exit }')
-            if [[ -n "$dev" ]]; then
-                nmcli device disconnect "$dev" \
-                    && _notify "Wi-Fi" "Disconnected ($dev)" \
-                    || _notify "Wi-Fi" "Failed to disconnect $dev"
+        "Saved Networks")
+            local saved_list
+            saved_list=$(wifi_saved_profiles)
+            if [[ -z "$saved_list" ]]; then
+                printf "No saved networks" | _dmenu "Saved:" -l 1
             else
-                _notify "Wi-Fi" "No active Wi-Fi connection"
+                local chosen
+                chosen=$(echo "$saved_list" | _dmenu "Saved networks:" -l "$DMENU_LINES")
+                [[ -z "$chosen" ]] && continue
+                local act
+                act=$(printf "Connect\nForget\nCancel" | _dmenu "'$chosen':")
+                case "$act" in
+                "Connect") action_wifi_connect "$chosen" ;;
+                "Forget")
+                    nmcli connection delete "$chosen" 2>/dev/null \
+                        && _notify "Wi‑Fi" "Forgotten $chosen" \
+                        || _notify "Wi‑Fi" "Could not forget $chosen"
+                    ;;
+                esac
             fi
-            return 0
-        fi
+            ;;
 
-        nmcli connection down "$conn" \
-            && _notify "Wi-Fi" "Disconnected from $conn" \
-            || _notify "Wi-Fi" "Failed to disconnect $conn"
-        ;;
-
-    # ------------------------------------------------------------------
-    "Status")
-        local ssid signal ip
-        ssid=$(nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null \
-            | awk -F: '/^yes/ { print $2; exit }')
-
-        if [[ -n "$ssid" ]]; then
-            signal=$(nmcli -t -f ACTIVE,SIGNAL dev wifi 2>/dev/null \
-                | awk -F: '/^yes/ { print $2; exit }')
-            ip=$(nmcli -t -f IP4.ADDRESS dev show 2>/dev/null \
-                | awk -F: 'NR==1 { print $2 }')
-            printf "%s  sig:%s%%  %s" "$ssid" "$signal" "$ip" \
-                | _dmenu "Wi-Fi Status:" -l 1
-        else
-            printf "Not connected" | _dmenu "Wi-Fi Status:" -l 1
-        fi
-        ;;
-
-    esac
+        "Forget Network")
+            local saved_list
+            saved_list=$(wifi_saved_profiles)
+            if [[ -z "$saved_list" ]]; then
+                printf "No saved networks" | _dmenu "Saved:" -l 1
+            else
+                local chosen
+                chosen=$(echo "$saved_list" | _dmenu "Forget network:" -l "$DMENU_LINES")
+                [[ -z "$chosen" ]] && continue
+                nmcli connection delete "$chosen" 2>/dev/null \
+                    && _notify "Wi‑Fi" "Forgotten $chosen" \
+                    || _notify "Wi‑Fi" "Could not forget $chosen"
+            fi
+            ;;
+        esac
+    done
 }
 
 # =============================================================================
-# BLUETOOTH  (unchanged — working fine)
+# BLUETOOTH (robust)
 # =============================================================================
-handle_bluetooth() {
-    local opt
-    opt=$(printf "Connect\nTurn On\nTurn Off\nDisconnect\nStatus\nCancel" \
-        | _dmenu "Bluetooth:")
-    [[ -z "$opt" || "$opt" == "Cancel" ]] && return 0
 
-    case "$opt" in
+bt_is_on() {
+    bluetoothctl show 2>/dev/null | grep -q "Powered: yes"
+}
 
-    "Turn On")
-        rfkill unblock bluetooth && systemctl start bluetooth \
-            && _notify "Bluetooth" "Turned ON" \
-            || _notify "Bluetooth" "Failed to enable"
-        ;;
-
-    "Turn Off")
-        rfkill block bluetooth && systemctl stop bluetooth \
-            && _notify "Bluetooth" "Turned OFF" \
-            || _notify "Bluetooth" "Failed to disable"
-        ;;
-
-    "Connect")
-        local device_list
-        device_list=$(bluetoothctl devices 2>/dev/null \
-            | awk '{ $1=""; print $0 }' \
-            | sed 's/^ //')
-
-        if [[ -z "$device_list" ]]; then
-            printf "No paired devices found" | _dmenu "Bluetooth:" -l 1
-            return 0
-        fi
-
-        local selected
-        selected=$(echo "$device_list" | _dmenu "Connect to:" -l 8)
-        [[ -z "$selected" ]] && return 0
-
-        local addr
-        addr=$(echo "$selected" | awk '{ print $1 }')
-
-        bluetoothctl connect "$addr" \
-            && _notify "Bluetooth" "Connected to $selected" \
-            || _notify "Bluetooth" "Failed to connect to $selected"
-        ;;
-
-    "Disconnect")
-        local connected_list
-        connected_list=$(bluetoothctl devices Connected 2>/dev/null \
-            | awk '{ $1=""; print $0 }' \
-            | sed 's/^ //')
-
-        if [[ -z "$connected_list" ]]; then
-            printf "No devices connected" | _dmenu "Bluetooth:" -l 1
-            return 0
-        fi
-
-        local selected
-        selected=$(echo "$connected_list" | _dmenu "Disconnect:" -l 8)
-        [[ -z "$selected" ]] && return 0
-
-        local addr
-        addr=$(echo "$selected" | awk '{ print $1 }')
-
-        bluetoothctl disconnect "$addr" \
-            && _notify "Bluetooth" "Disconnected from $selected" \
-            || _notify "Bluetooth" "Failed to disconnect $selected"
-        ;;
-
-    "Status")
-        local connected_list
-        connected_list=$(bluetoothctl devices Connected 2>/dev/null \
-            | awk '{ $1=""; print $0 }' \
-            | sed 's/^ //')
-
-        if [[ -n "$connected_list" ]]; then
-            echo "$connected_list" | _dmenu "BT Connected:" -l 8
+action_bt_toggle() {
+    if bt_is_on; then
+        rfkill block bluetooth 2>/dev/null
+        sleep 0.3
+        if bt_is_on; then
+            _notify "Bluetooth" "Failed to disable"
         else
-            printf "No devices connected" | _dmenu "Bluetooth Status:" -l 1
+            _notify "Bluetooth" "Turned OFF"
         fi
-        ;;
+    else
+        rfkill unblock bluetooth 2>/dev/null
+        sleep 0.3
+        if bt_is_on; then
+            _notify "Bluetooth" "Turned ON"
+        else
+            _notify "Bluetooth" "Failed to enable"
+        fi
+    fi
+}
 
-    esac
+action_bt_connect() {
+    local target="$1"
+    [[ -z "$target" ]] && { _notify "Bluetooth" "No device specified"; return 1; }
+
+    # Extract the MAC address (first column of a bluetoothctl output line)
+    local mac
+    mac=$(echo "$target" | awk '{print $1}')
+    if [[ -z "$mac" ]]; then
+        _notify "Bluetooth" "Invalid device"
+        return 1
+    fi
+
+    if bluetoothctl connect "$mac" 2>/dev/null; then
+        _notify "Bluetooth" "Connected to $target"
+    else
+        _notify "Bluetooth" "Failed to connect to $target"
+    fi
+}
+
+action_bt_disconnect() {
+    local target="$1"
+    [[ -z "$target" ]] && { _notify "Bluetooth" "No device specified"; return 1; }
+
+    local mac
+    mac=$(echo "$target" | awk '{print $1}')
+    if [[ -z "$mac" ]]; then
+        _notify "Bluetooth" "Invalid device"
+        return 1
+    fi
+
+    if bluetoothctl disconnect "$mac" 2>/dev/null; then
+        _notify "Bluetooth" "Disconnected from $target"
+    else
+        _notify "Bluetooth" "Failed to disconnect $target"
+    fi
+}
+
+interactive_bluetooth() {
+    while true; do
+        local opt
+        opt=$(printf "Connect\nTurn On\nTurn Off\nDisconnect\nStatus\nBack" \
+            | _dmenu "Bluetooth:")
+        [[ -z "$opt" || "$opt" == "Back" ]] && return 0
+
+        case "$opt" in
+        "Turn On")
+            if ! bt_is_on; then
+                action_bt_toggle
+            else
+                _notify "Bluetooth" "Already on"
+            fi
+            ;;
+
+        "Turn Off")
+            if bt_is_on; then
+                action_bt_toggle
+            else
+                _notify "Bluetooth" "Already off"
+            fi
+            ;;
+
+        "Connect")
+            if ! bt_is_on; then
+                _notify "Bluetooth" "Bluetooth is off — turn it on first"
+                continue
+            fi
+
+            local devices
+            devices=$(bluetoothctl devices 2>/dev/null | awk '{ $1=""; print $0 }' | sed 's/^ //')
+            if [[ -z "$devices" ]]; then
+                printf "No paired devices found" | _dmenu "BT Devices:" -l 1
+                continue
+            fi
+
+            local chosen
+            chosen=$(echo "$devices" | _dmenu "Connect to:" -l 8)
+            [[ -z "$chosen" ]] && continue
+            action_bt_connect "$chosen"
+            ;;
+
+        "Disconnect")
+            local connected
+            connected=$(bluetoothctl devices Connected 2>/dev/null | awk '{ $1=""; print $0 }' | sed 's/^ //')
+            if [[ -z "$connected" ]]; then
+                printf "No devices connected" | _dmenu "BT Connected:" -l 1
+                continue
+            fi
+
+            local chosen
+            chosen=$(echo "$connected" | _dmenu "Disconnect:" -l 8)
+            [[ -z "$chosen" ]] && continue
+            action_bt_disconnect "$chosen"
+            ;;
+
+        "Status")
+            local connected
+            connected=$(bluetoothctl devices Connected 2>/dev/null | awk '{ $1=""; print $0 }' | sed 's/^ //')
+            if [[ -n "$connected" ]]; then
+                echo "$connected" | _dmenu "BT Connected:" -l 8
+            else
+                printf "No devices connected" | _dmenu "Bluetooth Status:" -l 1
+            fi
+            ;;
+        esac
+    done
 }
 
 # =============================================================================
-# DISPATCH
+# COMMAND‑LINE DISPATCH (for panel modules)
 # =============================================================================
-case "$CHOICE" in
-    "Wi-Fi")     handle_wifi      ;;
-    "Bluetooth") handle_bluetooth ;;
+case "${1:-}" in
+    # Direct actions
+    --wifi-toggle)       action_wifi_toggle ;;
+    --wifi-connect)      action_wifi_connect "${2:-}" ;;
+    --wifi-disconnect)   action_wifi_disconnect ;;
+    --bt-toggle)         action_bt_toggle ;;
+    --bt-connect)        action_bt_connect "${2:-}" ;;
+    --bt-disconnect)     action_bt_disconnect "${2:-}" ;;
+
+    # Submenu shortcuts
+    --wifi)              interactive_wifi ;;
+    --bluetooth)         interactive_bluetooth ;;
+
+    # Default full menu
+    *)
+        CHOICE=$(printf "Wi‑Fi\nBluetooth" | _dmenu "Network:")
+        case "$CHOICE" in
+            "Wi‑Fi")     interactive_wifi ;;
+            "Bluetooth") interactive_bluetooth ;;
+        esac
+        ;;
 esac
 
 exit 0

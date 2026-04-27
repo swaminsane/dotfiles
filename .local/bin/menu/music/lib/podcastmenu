@@ -144,9 +144,10 @@ play_episode() {
     kill_pid_file "$RADIO_PID_FILE"
     /usr/bin/mpc pause 2>/dev/null
 
-    local -a mpv_args=(
-        --no-video
+        local -a mpv_args=(
         --really-quiet
+        --force-window=yes
+        --window-minimized=yes
         --speed="$PLAYBACK_SPEED"
         --input-ipc-server="$PODCAST_SOCKET"
     )

@@ -1,0 +1,44 @@
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+# Detect active player PID
+if is_running "$YT_PID_FILE"; then
+    pid=$(cat "$YT_PID_FILE")
+elif is_running "$PODCAST_PID_FILE"; then
+    pid=$(cat "$PODCAST_PID_FILE")
+elif is_running "$RADIO_PID_FILE"; then
+    pid=$(cat "$RADIO_PID_FILE")
+else
+    notify-send "musicwindow" "No audio player running."
+    exit 1
+fi
+
+# Check for xdotool
+if ! command -v xdotool &>/dev/null; then
+    notify-send "musicwindow" "Install xdotool: sudo apt install xdotool"
+    exit 1
+fi
+
+# Find the mpv window
+wid=$(xdotool search --pid "$pid" --limit 1 2>/dev/null)
+if [ -z "$wid" ]; then
+    notify-send "musicwindow" "Could not find mpv window. Is it on X11?"
+    exit 1
+fi
+
+# Parse flag
+case "${1:-}" in
+    --unhide)
+        xdotool windowmap "$wid"
+        xdotool windowactivate "$wid"
+        notify-send "musicwindow" "Window shown."
+        ;;
+    --hide)
+        xdotool windowunmap "$wid"       # hides without minimising (more thorough)
+        notify-send "musicwindow" "Window hidden."
+        ;;
+    *)
+        echo "Usage: musicwindow [--hide | --unhide]"
+        exit 1
+        ;;
+esac

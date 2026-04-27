@@ -1,0 +1,400 @@
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+# --- Terminal setup ---
+ESC="\033"
+RESET="${ESC}[0m"
+BOLD="${ESC}[1m"
+DIM="${ESC}[2m"
+REV="${ESC}[7m"
+
+BLACK="${ESC}[30m"
+RED="${ESC}[31m"
+GREEN="${ESC}[32m"
+YELLOW="${ESC}[33m"
+BLUE="${ESC}[34m"
+MAGENTA="${ESC}[35m"
+CYAN="${ESC}[36m"
+WHITE="${ESC}[37m"
+
+BG_BLACK="${ESC}[40m"
+BG_BLUE="${ESC}[44m"
+BG_CYAN="${ESC}[46m"
+
+hide_cursor()  { printf "${ESC}[?25l"; }
+show_cursor()  { printf "${ESC}[?25h"; }
+clear_screen() { printf "${ESC}[2J${ESC}[H"; }
+move()         { printf "${ESC}[$1;$2H"; }
+clear_line()   { printf "${ESC}[2K"; }
+
+# --- Cleanup on exit ---
+cleanup() {
+    show_cursor
+    tput rmcbreak 2>/dev/null
+    tput echo 2>/dev/null
+    clear_screen
+    exit 0
+}
+trap cleanup EXIT INT TERM
+
+# --- Helpers ---
+
+get_volume_pa() {
+    pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null | \
+        grep -oP '\d+%' | head -n1 | tr -d '%'
+}
+
+set_volume_pa() {
+    pactl set-sink-volume @DEFAULT_SINK@ "$1%"
+}
+
+is_muted() {
+    pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | grep -q "yes"
+}
+
+toggle_mute() {
+    pactl set-sink-mute @DEFAULT_SINK@ toggle
+}
+
+get_sinks() {
+    pactl list sinks short 2>/dev/null | \
+        awk '{print $1"\t"$2}'
+}
+
+get_default_sink() {
+    pactl get-default-sink 2>/dev/null
+}
+
+set_default_sink() {
+    pactl set-default-sink "$1"
+}
+
+get_sink_display_name() {
+    pactl list sinks 2>/dev/null | \
+        grep -A5 "Name: $1" | \
+        grep "Description:" | \
+        sed 's/.*Description: //' | head -n1
+}
+
+get_active_apps() {
+    pactl list sink-inputs short 2>/dev/null | \
+        awk '{print $1}' | while read -r id; do
+        name=$(pactl list sink-inputs 2>/dev/null | \
+            grep -A20 "Sink Input #$id" | \
+            grep -E "application.name|media.name" | \
+            head -n1 | sed 's/.*= //' | tr -d '"')
+        vol=$(pactl list sink-inputs 2>/dev/null | \
+            grep -A20 "Sink Input #$id" | \
+            grep "Volume:" | grep -oP '\d+%' | head -n1)
+        echo "$name — $vol"
+    done
+}
+
+draw_bar() {
+    local val="$1" max="$2" width="$3" color="$4"
+    local filled=$(( val * width / max ))
+    [ "$filled" -gt "$width" ] && filled=$width
+    local empty=$(( width - filled ))
+    printf "${color}"
+    printf '%0.s█' $(seq 1 $filled 2>/dev/null) 2>/dev/null
+    printf "${DIM}"
+    printf '%0.s░' $(seq 1 $empty 2>/dev/null) 2>/dev/null
+    printf "${RESET}"
+}
+
+get_playback_info() {
+    if is_running "$YT_PID_FILE"; then
+        SOURCE="YouTube"
+        SOURCE_COLOR="$RED"
+        STATUS="PLAYING"
+
+        # Get mpv info via IPC
+        TITLE=$(echo '{"command":["get_property","media-title"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',''))" \
+            2>/dev/null)
+
+        TIME_POS=$(echo '{"command":["get_property","time-pos"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('data',0) or 0))" \
+            2>/dev/null)
+
+        DURATION=$(echo '{"command":["get_property","duration"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('data',0) or 0))" \
+            2>/dev/null)
+
+        PAUSED=$(echo '{"command":["get_property","pause"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',False))" \
+            2>/dev/null)
+        [ "$PAUSED" = "True" ] && STATUS="PAUSED"
+
+    elif is_running "$RADIO_PID_FILE"; then
+        SOURCE="Radio"
+        SOURCE_COLOR="$CYAN"
+        STATUS="LIVE"
+
+        TITLE=$(echo '{"command":["get_property","media-title"]}' | \
+            socat - "$RADIO_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',''))" \
+            2>/dev/null)
+
+        TIME_POS=0
+        DURATION=0
+
+    else
+        SOURCE="MPC"
+        SOURCE_COLOR="$GREEN"
+
+        mpc_status=$(/usr/bin/mpc status 2>/dev/null)
+        TITLE=$(/usr/bin/mpc current 2>/dev/null)
+        STATUS=$(echo "$mpc_status" | grep -oP '\[.*?\]' | tr -d '[]' | \
+            tr '[:lower:]' '[:upper:]')
+        [ -z "$STATUS" ] && STATUS="STOPPED"
+
+        # Parse time from mpc: "0:32/4:07 (13%)"
+        time_str=$(echo "$mpc_status" | grep -oP '\d+:\d+/\d+:\d+')
+        elapsed=$(echo "$time_str" | cut -d'/' -f1)
+        total=$(echo "$time_str" | cut -d'/' -f2)
+
+        time_to_secs() {
+            local t="$1"
+            local m=$(echo "$t" | cut -d: -f1)
+            local s=$(echo "$t" | cut -d: -f2)
+            echo $(( m * 60 + s ))
+        }
+
+        TIME_POS=$(time_to_secs "$elapsed" 2>/dev/null || echo 0)
+        DURATION=$(time_to_secs "$total" 2>/dev/null || echo 0)
+    fi
+
+    [ -z "$TITLE" ] && TITLE="Nothing"
+    [ -z "$TIME_POS" ] && TIME_POS=0
+    [ -z "$DURATION" ] && DURATION=0
+}
+
+fmt_time() {
+    local t="$1"
+    printf "%d:%02d" $(( t / 60 )) $(( t % 60 ))
+}
+
+# --- Draw UI ---
+draw_ui() {
+    local vol="$1"
+    local COLS LINES
+    COLS=$(tput cols)
+    LINES=$(tput lines)
+    local W=$(( COLS - 4 ))
+
+    clear_screen
+
+    # Header
+    move 1 1
+    printf "${BOLD}${BG_BLUE}${WHITE}"
+    printf "%-${COLS}s" "  ♫  Music Manager"
+    printf "${RESET}"
+
+    # Divider helper
+    divider() {
+        local row="$1"
+        move "$row" 1
+        printf "${DIM}%s${RESET}" "$(printf '─%.0s' $(seq 1 $COLS))"
+    }
+
+    # --- Playback section ---
+    move 3 3
+    printf "${BOLD}${SOURCE_COLOR}▶ $SOURCE${RESET}  ${DIM}$STATUS${RESET}"
+
+    move 4 3
+    # Truncate title
+    local short_title="${TITLE:0:$(( COLS - 6 ))}"
+    printf "${BOLD}${WHITE}%s${RESET}" "$short_title"
+
+    # Progress bar
+    move 6 3
+    if [ "$DURATION" -gt 0 ]; then
+        printf "${DIM}$(fmt_time $TIME_POS)${RESET} "
+        draw_bar "$TIME_POS" "$DURATION" $(( W - 14 )) "$GREEN"
+        printf " ${DIM}$(fmt_time $DURATION)${RESET}"
+    else
+        printf "${DIM}── live / no duration ──${RESET}"
+    fi
+
+    divider 8
+
+    # --- Volume section ---
+    move 9 3
+    local mute_label=""
+    is_muted && mute_label="${RED} [MUTED]${RESET}"
+    printf "${BOLD}Volume:${RESET} ${BOLD}${YELLOW}%3d%%${RESET}%b" "$vol" "$mute_label"
+
+    move 10 3
+    draw_bar "$vol" 100 $(( W - 2 )) "$YELLOW"
+
+    divider 12
+
+    # --- Audio output section ---
+    local default_sink
+    default_sink=$(get_default_sink)
+    local sink_name
+    sink_name=$(get_sink_display_name "$default_sink")
+    [ -z "$sink_name" ] && sink_name="$default_sink"
+
+    move 13 3
+    printf "${BOLD}Output:${RESET} ${CYAN}%s${RESET}" "${sink_name:0:$(( COLS - 14 ))}"
+
+    # List sinks
+    local row=14
+    while IFS=$'\t' read -r id name; do
+        local marker="  "
+        local color="$DIM"
+        if [ "$name" = "$default_sink" ]; then
+            marker="${GREEN}▶ ${RESET}"
+            color="$WHITE"
+        fi
+        disp=$(get_sink_display_name "$name")
+        [ -z "$disp" ] && disp="$name"
+        move "$row" 5
+        printf "%b${color}%s${RESET}" "$marker" "${disp:0:$(( COLS - 10 ))}"
+        row=$(( row + 1 ))
+        [ "$row" -gt $(( LINES - 8 )) ] && break
+    done <<< "$(get_sinks)"
+
+    divider $(( LINES - 7 ))
+
+    # --- Active apps ---
+    move $(( LINES - 6 )) 3
+    printf "${BOLD}Active streams:${RESET}"
+    local arow=$(( LINES - 5 ))
+    while IFS= read -r app; do
+        [ -z "$app" ] && continue
+        move "$arow" 5
+        printf "${DIM}• %s${RESET}" "${app:0:$(( COLS - 8 ))}"
+        arow=$(( arow + 1 ))
+        [ "$arow" -gt $(( LINES - 2 )) ] && break
+    done <<< "$(get_active_apps)"
+
+    divider $(( LINES - 1 ))
+
+    # --- Keybinds footer ---
+    move "$LINES" 1
+    printf "${BG_BLACK}${DIM}"
+    printf "%-${COLS}s" \
+        "  ↑↓ volume  m mute  n next  p prev  s stop  o output  r refresh  q quit"
+    printf "${RESET}"
+}
+
+# --- Main loop ---
+hide_cursor
+tput cbreak 2>/dev/null
+tput -S <<< $'smcup\ncivis' 2>/dev/null
+
+VOL=$(get_volume_pa)
+[ -z "$VOL" ] && VOL=50
+REFRESH=3
+last_draw=0
+
+while true; do
+    now=$(date +%s)
+
+    # Auto-refresh every REFRESH seconds
+    if [ $(( now - last_draw )) -ge "$REFRESH" ]; then
+        get_playback_info
+        VOL=$(get_volume_pa)
+        [ -z "$VOL" ] && VOL=50
+        draw_ui "$VOL"
+        last_draw=$now
+    fi
+
+    # Non-blocking key read
+    if read -r -s -n1 -t 0.5 key; then
+        case "$key" in
+            q|Q)
+                cleanup
+                ;;
+            m|M)
+                toggle_mute
+                ;;
+            # Volume up
+            $'\033')
+                read -r -s -n2 -t 0.1 arrow
+                case "$arrow" in
+                    '[A') # Up arrow
+                        VOL=$(( VOL + 5 ))
+                        [ "$VOL" -gt 150 ] && VOL=150
+                        set_volume_pa "$VOL"
+                        ;;
+                    '[B') # Down arrow
+                        VOL=$(( VOL - 5 ))
+                        [ "$VOL" -lt 0 ] && VOL=0
+                        set_volume_pa "$VOL"
+                        ;;
+                esac
+                ;;
+            n|N)
+                if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+                    :
+                else
+                    /usr/bin/mpc next 2>/dev/null
+                fi
+                ;;
+            p|P)
+                if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+                    :
+                else
+                    /usr/bin/mpc prev 2>/dev/null
+                fi
+                ;;
+            " ")
+                # Space = play/pause
+                if is_running "$YT_PID_FILE"; then
+                    echo '{"command":["cycle","pause"]}' | \
+                        socat - "$YT_SOCKET" 2>/dev/null
+                elif is_running "$RADIO_PID_FILE"; then
+                    echo '{"command":["cycle","pause"]}' | \
+                        socat - "$RADIO_SOCKET" 2>/dev/null
+                else
+                    /usr/bin/mpc toggle 2>/dev/null
+                fi
+                ;;
+            s|S)
+                kill_pid_file "$YT_PID_FILE"
+                kill_pid_file "$RADIO_PID_FILE"
+                /usr/bin/mpc stop 2>/dev/null
+                ;;
+            o|O)
+                # Cycle to next output sink
+                sinks=$(get_sinks | awk -F'\t' '{print $2}')
+                default=$(get_default_sink)
+                next_sink=""
+                found=0
+                while IFS= read -r s; do
+                    if [ "$found" -eq 1 ]; then
+                        next_sink="$s"
+                        break
+                    fi
+                    [ "$s" = "$default" ] && found=1
+                done <<< "$sinks"
+                # Wrap around
+                [ -z "$next_sink" ] && \
+                    next_sink=$(echo "$sinks" | head -n1)
+                if [ -n "$next_sink" ]; then
+                    set_default_sink "$next_sink"
+                    disp=$(get_sink_display_name "$next_sink")
+                    notify-send "Audio" "Output: $disp"
+                fi
+                ;;
+            r|R)
+                last_draw=0
+                ;;
+        esac
+
+        # Redraw after any keypress
+        get_playback_info
+        VOL=$(get_volume_pa)
+        draw_ui "$VOL"
+        last_draw=$(date +%s)
+    fi
+done
+

@@ -8,6 +8,7 @@ DMENU_DIR="$HOME/.local/src/dmenu"
 TABBED_DIR="$HOME/.local/src/tabbed"
 THEME_FILE="$HOME/.config/theme/colors.h"
 MUHHWM_DIR="$HOME/.local/src/muhhwm"
+MUHHPANL_DIR="$HOME/.local/src/muhhwm/tools/muhhpanl"
 # ════════════════════════════════════════════════════════════════════════════
 # NAMED — well-known colorschemes
 # ════════════════════════════════════════════════════════════════════════════
@@ -760,11 +761,12 @@ esac
 
 echo "Applying theme: $CHOICE"
 
-# ── copy theme to muhhwm ─────────────────────────────────────────────────────
+# ── copy theme to muhhwm and muhhpanl─────────────────────────────────────────
 cp "$THEME_FILE" "$MUHHWM_DIR/colors.h"
+cp "$THEME_FILE" "$MUHHPANL_DIR/colors.h"
 
 # ── recompile ────────────────────────────────────────────────────────────────
-for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR" "$MUHHWM_DIR"; do
+for dir in "$ST_DIR" "$DWM_DIR" "$DMENU_DIR" "$TABBED_DIR" "$MUHHWM_DIR" "$MUHHPANL_DIR"; do
   name=$(basename $dir)
   echo "Building $name..."
   cd "$dir" && sudo make clean install

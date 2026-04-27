@@ -85,10 +85,13 @@ play_url() {
 
     case "$PLAYBACK_MODE" in
         "audio")
-            mpv --no-video --really-quiet \
-                --ytdl-format="bestaudio" \
-                --input-ipc-server="$YT_SOCKET" \
-                "$url" &
+           mpv --really-quiet \
+    --ytdl-format="bestaudio" \
+    --vid=no \                       # <-- disable video track entirely
+    --force-window=yes \
+    --window-minimized=yes \
+    --input-ipc-server="$YT_SOCKET" \
+    "$url" &
             ;;
         "video")
             mpv --really-quiet \
