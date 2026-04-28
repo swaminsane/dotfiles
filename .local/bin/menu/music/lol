@@ -1,0 +1,2117 @@
+#!/bin/bash
+SCRIPTS_DIR="$HOME/.local/bin/menu/music"
+source "$SCRIPTS_DIR/lib/common"
+
+# Sleep timer status in prompt
+timer_status=""
+if [ -f "/tmp/sleeptimer.pid" ] && kill -0 "$(cat /tmp/sleeptimer.pid)" 2>/dev/null; then
+    end_time=$(cat /tmp/sleeptimer.time 2>/dev/null)
+    now=$(date +%s)
+    remaining=$(( end_time - now ))
+    mins=$(( remaining / 60 ))
+    timer_status=" | sleep ${mins}m"
+fi
+
+status="$(get_status)"
+
+choice=$(printf "Play/Pause\nNext\nPrevious\nMPC\nRadio\nYouTube\nPodcast\nSleep Timer" | \
+    dmenu -i -l 10 -p "Music | $status$timer_status")
+
+case "$choice" in
+    "Play/Pause")
+        smart_play_pause
+        ;;
+    "Next")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Next only works for MPC"
+        else
+            /usr/bin/mpc next
+        fi
+        ;;
+    "Previous")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Previous only works for MPC"
+        else
+            /usr/bin/mpc prev
+        fi
+        ;;
+    "MPC")
+        bash "$SCRIPTS_DIR/lib/mpcmenu"
+        ;;
+    "Radio")
+        bash "$SCRIPTS_DIR/lib/radiomenu"
+        ;;
+    "YouTube")
+        bash "$SCRIPTS_DIR/lib/ytmenu"
+        ;;
+    "Podcast")
+        bash "$SCRIPTS_DIR/lib/podcastmenu"
+        ;;
+    "Sleep Timer")
+        bash "$SCRIPTS_DIR/lib/sleeptimer"
+        ;;
+esac
+# --- Paths ---
+RADIO_FILE="$HOME/.local/share/music-menu/radio_stations"
+YT_FILE="$HOME/.local/share/music-menu/yt_stations"
+RADIO_PID_FILE="/tmp/radio.pid"
+YT_PID_FILE="/tmp/yt_mpv.pid"
+PODCAST_PID_FILE="/tmp/podcast.pid"
+RADIO_SOCKET="/tmp/radio_mpv.sock"
+YT_SOCKET="/tmp/yt_mpv.sock"
+PODCAST_SOCKET="/tmp/podcast.sock"
+SCRIPTS_DIR="$HOME/.local/bin/menu/music"
+
+# --- Ensure files exist ---
+mkdir -p "$HOME/.local/share/music-menu"
+[ -f "$RADIO_FILE" ] || touch "$RADIO_FILE"
+[ -f "$YT_FILE" ]    || touch "$YT_FILE"
+
+# --- Helpers ---
+is_running() {
+    local pidfile="$1"
+    [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+
+kill_pid_file() {
+    local pidfile="$1"
+    if [ -f "$pidfile" ]; then
+        kill "$(cat "$pidfile")" 2>/dev/null
+        rm -f "$pidfile"
+    fi
+}
+
+mpv_pause_toggle() {
+    local socket="$1"
+    echo '{"command":["cycle","pause"]}' | socat - "$socket" 2>/dev/null
+}
+
+stop_all_external() {
+    kill_pid_file "$YT_PID_FILE"
+    kill_pid_file "$RADIO_PID_FILE"
+    kill_pid_file "$PODCAST_PID_FILE"
+}
+
+get_status() {
+    if is_running "$YT_PID_FILE"; then
+        echo "YouTube playing"
+    elif is_running "$RADIO_PID_FILE"; then
+        echo "Radio playing"
+    elif is_running "$PODCAST_PID_FILE"; then
+        echo "Podcast playing"
+    else
+        /usr/bin/mpc status 2>/dev/null | head -n1 | cat || echo "MPD idle"
+    fi
+}
+
+smart_play_pause() {
+    if is_running "$YT_PID_FILE"; then
+        mpv_pause_toggle "$YT_SOCKET"
+        notify-send "YouTube" "Play/Pause toggled"
+    elif is_running "$RADIO_PID_FILE"; then
+        mpv_pause_toggle "$RADIO_SOCKET"
+        notify-send "Radio" "Play/Pause toggled"
+    elif is_running "$PODCAST_PID_FILE"; then
+        mpv_pause_toggle "$PODCAST_SOCKET"
+        notify-send "Podcast" "Play/Pause toggled"
+    else
+        /usr/bin/mpc toggle 2>/dev/null
+    fi
+}
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+# --- Terminal setup ---
+ESC="\033"
+RESET="${ESC}[0m"
+BOLD="${ESC}[1m"
+DIM="${ESC}[2m"
+REV="${ESC}[7m"
+
+BLACK="${ESC}[30m"
+RED="${ESC}[31m"
+GREEN="${ESC}[32m"
+YELLOW="${ESC}[33m"
+BLUE="${ESC}[34m"
+MAGENTA="${ESC}[35m"
+CYAN="${ESC}[36m"
+WHITE="${ESC}[37m"
+
+BG_BLACK="${ESC}[40m"
+BG_BLUE="${ESC}[44m"
+BG_CYAN="${ESC}[46m"
+
+hide_cursor()  { printf "${ESC}[?25l"; }
+show_cursor()  { printf "${ESC}[?25h"; }
+clear_screen() { printf "${ESC}[2J${ESC}[H"; }
+move()         { printf "${ESC}[$1;$2H"; }
+clear_line()   { printf "${ESC}[2K"; }
+
+# --- Cleanup on exit ---
+cleanup() {
+    show_cursor
+    tput rmcbreak 2>/dev/null
+    tput echo 2>/dev/null
+    clear_screen
+    exit 0
+}
+trap cleanup EXIT INT TERM
+
+# --- Helpers ---
+
+get_volume_pa() {
+    pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null | \
+        grep -oP '\d+%' | head -n1 | tr -d '%'
+}
+
+set_volume_pa() {
+    pactl set-sink-volume @DEFAULT_SINK@ "$1%"
+}
+
+is_muted() {
+    pactl get-sink-mute @DEFAULT_SINK@ 2>/dev/null | grep -q "yes"
+}
+
+toggle_mute() {
+    pactl set-sink-mute @DEFAULT_SINK@ toggle
+}
+
+get_sinks() {
+    pactl list sinks short 2>/dev/null | \
+        awk '{print $1"\t"$2}'
+}
+
+get_default_sink() {
+    pactl get-default-sink 2>/dev/null
+}
+
+set_default_sink() {
+    pactl set-default-sink "$1"
+}
+
+get_sink_display_name() {
+    pactl list sinks 2>/dev/null | \
+        grep -A5 "Name: $1" | \
+        grep "Description:" | \
+        sed 's/.*Description: //' | head -n1
+}
+
+get_active_apps() {
+    pactl list sink-inputs short 2>/dev/null | \
+        awk '{print $1}' | while read -r id; do
+        name=$(pactl list sink-inputs 2>/dev/null | \
+            grep -A20 "Sink Input #$id" | \
+            grep -E "application.name|media.name" | \
+            head -n1 | sed 's/.*= //' | tr -d '"')
+        vol=$(pactl list sink-inputs 2>/dev/null | \
+            grep -A20 "Sink Input #$id" | \
+            grep "Volume:" | grep -oP '\d+%' | head -n1)
+        echo "$name — $vol"
+    done
+}
+
+draw_bar() {
+    local val="$1" max="$2" width="$3" color="$4"
+    local filled=$(( val * width / max ))
+    [ "$filled" -gt "$width" ] && filled=$width
+    local empty=$(( width - filled ))
+    printf "${color}"
+    printf '%0.s█' $(seq 1 $filled 2>/dev/null) 2>/dev/null
+    printf "${DIM}"
+    printf '%0.s░' $(seq 1 $empty 2>/dev/null) 2>/dev/null
+    printf "${RESET}"
+}
+
+get_playback_info() {
+    if is_running "$YT_PID_FILE"; then
+        SOURCE="YouTube"
+        SOURCE_COLOR="$RED"
+        STATUS="PLAYING"
+
+        # Get mpv info via IPC
+        TITLE=$(echo '{"command":["get_property","media-title"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',''))" \
+            2>/dev/null)
+
+        TIME_POS=$(echo '{"command":["get_property","time-pos"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('data',0) or 0))" \
+            2>/dev/null)
+
+        DURATION=$(echo '{"command":["get_property","duration"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('data',0) or 0))" \
+            2>/dev/null)
+
+        PAUSED=$(echo '{"command":["get_property","pause"]}' | \
+            socat - "$YT_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',False))" \
+            2>/dev/null)
+        [ "$PAUSED" = "True" ] && STATUS="PAUSED"
+
+    elif is_running "$RADIO_PID_FILE"; then
+        SOURCE="Radio"
+        SOURCE_COLOR="$CYAN"
+        STATUS="LIVE"
+
+        TITLE=$(echo '{"command":["get_property","media-title"]}' | \
+            socat - "$RADIO_SOCKET" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',''))" \
+            2>/dev/null)
+
+        TIME_POS=0
+        DURATION=0
+
+    else
+        SOURCE="MPC"
+        SOURCE_COLOR="$GREEN"
+
+        mpc_status=$(/usr/bin/mpc status 2>/dev/null)
+        TITLE=$(/usr/bin/mpc current 2>/dev/null)
+        STATUS=$(echo "$mpc_status" | grep -oP '\[.*?\]' | tr -d '[]' | \
+            tr '[:lower:]' '[:upper:]')
+        [ -z "$STATUS" ] && STATUS="STOPPED"
+
+        # Parse time from mpc: "0:32/4:07 (13%)"
+        time_str=$(echo "$mpc_status" | grep -oP '\d+:\d+/\d+:\d+')
+        elapsed=$(echo "$time_str" | cut -d'/' -f1)
+        total=$(echo "$time_str" | cut -d'/' -f2)
+
+        time_to_secs() {
+            local t="$1"
+            local m=$(echo "$t" | cut -d: -f1)
+            local s=$(echo "$t" | cut -d: -f2)
+            echo $(( m * 60 + s ))
+        }
+
+        TIME_POS=$(time_to_secs "$elapsed" 2>/dev/null || echo 0)
+        DURATION=$(time_to_secs "$total" 2>/dev/null || echo 0)
+    fi
+
+    [ -z "$TITLE" ] && TITLE="Nothing"
+    [ -z "$TIME_POS" ] && TIME_POS=0
+    [ -z "$DURATION" ] && DURATION=0
+}
+
+fmt_time() {
+    local t="$1"
+    printf "%d:%02d" $(( t / 60 )) $(( t % 60 ))
+}
+
+# --- Draw UI ---
+draw_ui() {
+    local vol="$1"
+    local COLS LINES
+    COLS=$(tput cols)
+    LINES=$(tput lines)
+    local W=$(( COLS - 4 ))
+
+    clear_screen
+
+    # Header
+    move 1 1
+    printf "${BOLD}${BG_BLUE}${WHITE}"
+    printf "%-${COLS}s" "  ♫  Music Manager"
+    printf "${RESET}"
+
+    # Divider helper
+    divider() {
+        local row="$1"
+        move "$row" 1
+        printf "${DIM}%s${RESET}" "$(printf '─%.0s' $(seq 1 $COLS))"
+    }
+
+    # --- Playback section ---
+    move 3 3
+    printf "${BOLD}${SOURCE_COLOR}▶ $SOURCE${RESET}  ${DIM}$STATUS${RESET}"
+
+    move 4 3
+    # Truncate title
+    local short_title="${TITLE:0:$(( COLS - 6 ))}"
+    printf "${BOLD}${WHITE}%s${RESET}" "$short_title"
+
+    # Progress bar
+    move 6 3
+    if [ "$DURATION" -gt 0 ]; then
+        printf "${DIM}$(fmt_time $TIME_POS)${RESET} "
+        draw_bar "$TIME_POS" "$DURATION" $(( W - 14 )) "$GREEN"
+        printf " ${DIM}$(fmt_time $DURATION)${RESET}"
+    else
+        printf "${DIM}── live / no duration ──${RESET}"
+    fi
+
+    divider 8
+
+    # --- Volume section ---
+    move 9 3
+    local mute_label=""
+    is_muted && mute_label="${RED} [MUTED]${RESET}"
+    printf "${BOLD}Volume:${RESET} ${BOLD}${YELLOW}%3d%%${RESET}%b" "$vol" "$mute_label"
+
+    move 10 3
+    draw_bar "$vol" 100 $(( W - 2 )) "$YELLOW"
+
+    divider 12
+
+    # --- Audio output section ---
+    local default_sink
+    default_sink=$(get_default_sink)
+    local sink_name
+    sink_name=$(get_sink_display_name "$default_sink")
+    [ -z "$sink_name" ] && sink_name="$default_sink"
+
+    move 13 3
+    printf "${BOLD}Output:${RESET} ${CYAN}%s${RESET}" "${sink_name:0:$(( COLS - 14 ))}"
+
+    # List sinks
+    local row=14
+    while IFS=$'\t' read -r id name; do
+        local marker="  "
+        local color="$DIM"
+        if [ "$name" = "$default_sink" ]; then
+            marker="${GREEN}▶ ${RESET}"
+            color="$WHITE"
+        fi
+        disp=$(get_sink_display_name "$name")
+        [ -z "$disp" ] && disp="$name"
+        move "$row" 5
+        printf "%b${color}%s${RESET}" "$marker" "${disp:0:$(( COLS - 10 ))}"
+        row=$(( row + 1 ))
+        [ "$row" -gt $(( LINES - 8 )) ] && break
+    done <<< "$(get_sinks)"
+
+    divider $(( LINES - 7 ))
+
+    # --- Active apps ---
+    move $(( LINES - 6 )) 3
+    printf "${BOLD}Active streams:${RESET}"
+    local arow=$(( LINES - 5 ))
+    while IFS= read -r app; do
+        [ -z "$app" ] && continue
+        move "$arow" 5
+        printf "${DIM}• %s${RESET}" "${app:0:$(( COLS - 8 ))}"
+        arow=$(( arow + 1 ))
+        [ "$arow" -gt $(( LINES - 2 )) ] && break
+    done <<< "$(get_active_apps)"
+
+    divider $(( LINES - 1 ))
+
+    # --- Keybinds footer ---
+    move "$LINES" 1
+    printf "${BG_BLACK}${DIM}"
+    printf "%-${COLS}s" \
+        "  ↑↓ volume  m mute  n next  p prev  s stop  o output  r refresh  q quit"
+    printf "${RESET}"
+}
+
+# --- Main loop ---
+hide_cursor
+tput cbreak 2>/dev/null
+tput -S <<< $'smcup\ncivis' 2>/dev/null
+
+VOL=$(get_volume_pa)
+[ -z "$VOL" ] && VOL=50
+REFRESH=3
+last_draw=0
+
+while true; do
+    now=$(date +%s)
+
+    # Auto-refresh every REFRESH seconds
+    if [ $(( now - last_draw )) -ge "$REFRESH" ]; then
+        get_playback_info
+        VOL=$(get_volume_pa)
+        [ -z "$VOL" ] && VOL=50
+        draw_ui "$VOL"
+        last_draw=$now
+    fi
+
+    # Non-blocking key read
+    if read -r -s -n1 -t 0.5 key; then
+        case "$key" in
+            q|Q)
+                cleanup
+                ;;
+            m|M)
+                toggle_mute
+                ;;
+            # Volume up
+            $'\033')
+                read -r -s -n2 -t 0.1 arrow
+                case "$arrow" in
+                    '[A') # Up arrow
+                        VOL=$(( VOL + 5 ))
+                        [ "$VOL" -gt 150 ] && VOL=150
+                        set_volume_pa "$VOL"
+                        ;;
+                    '[B') # Down arrow
+                        VOL=$(( VOL - 5 ))
+                        [ "$VOL" -lt 0 ] && VOL=0
+                        set_volume_pa "$VOL"
+                        ;;
+                esac
+                ;;
+            n|N)
+                if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+                    :
+                else
+                    /usr/bin/mpc next 2>/dev/null
+                fi
+                ;;
+            p|P)
+                if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+                    :
+                else
+                    /usr/bin/mpc prev 2>/dev/null
+                fi
+                ;;
+            " ")
+                # Space = play/pause
+                if is_running "$YT_PID_FILE"; then
+                    echo '{"command":["cycle","pause"]}' | \
+                        socat - "$YT_SOCKET" 2>/dev/null
+                elif is_running "$RADIO_PID_FILE"; then
+                    echo '{"command":["cycle","pause"]}' | \
+                        socat - "$RADIO_SOCKET" 2>/dev/null
+                else
+                    /usr/bin/mpc toggle 2>/dev/null
+                fi
+                ;;
+            s|S)
+                kill_pid_file "$YT_PID_FILE"
+                kill_pid_file "$RADIO_PID_FILE"
+                /usr/bin/mpc stop 2>/dev/null
+                ;;
+            o|O)
+                # Cycle to next output sink
+                sinks=$(get_sinks | awk -F'\t' '{print $2}')
+                default=$(get_default_sink)
+                next_sink=""
+                found=0
+                while IFS= read -r s; do
+                    if [ "$found" -eq 1 ]; then
+                        next_sink="$s"
+                        break
+                    fi
+                    [ "$s" = "$default" ] && found=1
+                done <<< "$sinks"
+                # Wrap around
+                [ -z "$next_sink" ] && \
+                    next_sink=$(echo "$sinks" | head -n1)
+                if [ -n "$next_sink" ]; then
+                    set_default_sink "$next_sink"
+                    disp=$(get_sink_display_name "$next_sink")
+                    notify-send "Audio" "Output: $disp"
+                fi
+                ;;
+            r|R)
+                last_draw=0
+                ;;
+        esac
+
+        # Redraw after any keypress
+        get_playback_info
+        VOL=$(get_volume_pa)
+        draw_ui "$VOL"
+        last_draw=$(date +%s)
+    fi
+done
+
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+choice=$(printf "Select Song\nSelect Playlist\nNext\nPrevious\nAdd to Queue\nOpen ncmpcpp\nUpdate Library\nStart MPD\nStop MPD" | \
+    dmenu -i -l 10 -p "MPC")
+
+case "$choice" in
+    "Select Song")
+        song=$(/usr/bin/mpc listall | dmenu -i -l 20 -p "Play song")
+        if [ -n "$song" ]; then
+            stop_all_external
+            /usr/bin/mpc clear
+            /usr/bin/mpc add "$song"
+            /usr/bin/mpc play
+        fi
+        ;;
+    "Select Playlist")
+        playlist=$(mpc listall | awk -F/ '{NF--; OFS="/"; print $0}' | grep '.' | sort -u | dmenu -i -l 20 -p "Play Directory:")
+        if [ -n "$playlist" ]; then
+            stop_all_external
+            /usr/bin/mpc clear
+            /usr/bin/mpc add "$playlist"
+            /usr/bin/mpc play
+           fi
+           ;;
+    "Next")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Next only works for MPC"
+        else
+            /usr/bin/mpc next
+        fi
+        ;;
+    "Previous")
+        if is_running "$YT_PID_FILE" || is_running "$RADIO_PID_FILE"; then
+            notify-send "Music" "Previous only works for MPC"
+        else
+            /usr/bin/mpc prev
+        fi
+        ;;
+    "Add to Queue")
+        song=$(/usr/bin/mpc listall | dmenu -i -l 20 -p "Add to queue")
+        [ -n "$song" ] && /usr/bin/mpc add "$song"
+        ;;
+    "Open ncmpcpp")
+        st -e ncmpcpp
+        ;;
+    "Update Library")
+        /usr/bin/mpc update
+        pkill ncmpcpp 2>/dev/null
+        notify-send "MPD" "Library updated"
+        ;;
+    "Start MPD")
+        systemctl --user start mpd
+        notify-send "MPD" "MPD started"
+        ;;
+    "Stop MPD")
+        systemctl --user stop mpd
+        notify-send "MPD" "MPD stopped"
+        ;;
+esac
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+# Detect active player PID
+if is_running "$YT_PID_FILE"; then
+    pid=$(cat "$YT_PID_FILE")
+elif is_running "$PODCAST_PID_FILE"; then
+    pid=$(cat "$PODCAST_PID_FILE")
+elif is_running "$RADIO_PID_FILE"; then
+    pid=$(cat "$RADIO_PID_FILE")
+else
+    notify-send "musicwindow" "No audio player running."
+    exit 1
+fi
+
+# Check for xdotool
+if ! command -v xdotool &>/dev/null; then
+    notify-send "musicwindow" "Install xdotool: sudo apt install xdotool"
+    exit 1
+fi
+
+# Find the mpv window
+wid=$(xdotool search --pid "$pid" --limit 1 2>/dev/null)
+if [ -z "$wid" ]; then
+    notify-send "musicwindow" "Could not find mpv window. Is it on X11?"
+    exit 1
+fi
+
+# Parse flag
+case "${1:-}" in
+    --unhide)
+        xdotool windowmap "$wid"
+        xdotool windowactivate "$wid"
+        notify-send "musicwindow" "Window shown."
+        ;;
+    --hide)
+        xdotool windowunmap "$wid"       # hides without minimising (more thorough)
+        notify-send "musicwindow" "Window hidden."
+        ;;
+    *)
+        echo "Usage: musicwindow [--hide | --unhide]"
+        exit 1
+        ;;
+esac
+#!/bin/bash
+# podcastmenu — dmenu-based podcast manager
+# Integrates with mpcmenu/radiomenu/ytmenu via common lib
+source "$HOME/.local/bin/menu/music/lib/common"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+PODCAST_DIR="$HOME/.local/share/music-menu/podcasts"
+FEEDS_FILE="$PODCAST_DIR/feeds"         # name \t url  (one feed per line)
+PLAYED_FILE="$PODCAST_DIR/played"       # one episode URL per line
+HISTORY_FILE="$PODCAST_DIR/history"     # M3U-style, newest first
+QUEUE_FILE="$PODCAST_DIR/queue"         # title \t url
+POSITIONS_FILE="$PODCAST_DIR/positions" # url \t seconds
+DOWNLOAD_LOG="$PODCAST_DIR/download_log"
+CACHE_DIR="$PODCAST_DIR/cache"          # per-feed episode lists
+SETTINGS_FILE="$PODCAST_DIR/settings"
+
+mkdir -p "$PODCAST_DIR" "$CACHE_DIR"
+for _f in "$FEEDS_FILE" "$PLAYED_FILE" "$HISTORY_FILE" \
+           "$QUEUE_FILE" "$POSITIONS_FILE" "$DOWNLOAD_LOG"; do
+    [ -f "$_f" ] || touch "$_f"
+done
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+load_settings() {
+    DOWNLOAD_DIR="$HOME/Music/Podcasts"
+    PLAYBACK_SPEED="1.0"
+    SKIP_SILENCE="no"
+    CACHE_TTL=60          # minutes before a cached feed is considered stale
+    EPISODE_COUNT=20      # max episodes fetched per feed
+    [ -f "$SETTINGS_FILE" ] && source "$SETTINGS_FILE"
+    mkdir -p "$DOWNLOAD_DIR"
+}
+
+save_setting() {
+    local key="$1" val="$2"
+    touch "$SETTINGS_FILE"
+    if grep -q "^${key}=" "$SETTINGS_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$SETTINGS_FILE"
+    else
+        echo "${key}=\"${val}\"" >> "$SETTINGS_FILE"
+    fi
+}
+
+load_settings
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+# Escape string for use as a grep basic-regex pattern
+escape_for_grep() {
+    printf '%s' "$1" | sed 's/[[\.*^$()+?{}|]/\\&/g'
+}
+
+# Format integer seconds → H:MM:SS
+format_duration() {
+    local s="${1%.*}"
+    printf '%d:%02d:%02d' $((s/3600)) $((s%3600/60)) $((s%60))
+}
+
+# Derive a stable cache filename from a feed URL
+cache_path() {
+    printf '%s' "$1" | md5sum | cut -d' ' -f1
+    # prints just the hash; caller prepends $CACHE_DIR/
+}
+
+add_to_history() {
+    local title="$1" url="$2"
+    sed -i "/^#EXTINF:-1,$(escape_for_grep "$title")$/{N;d;}" "$HISTORY_FILE"
+    printf "#EXTINF:-1,%s\n%s\n" "$title" "$url" | \
+        cat - "$HISTORY_FILE" > /tmp/podcast_hist_tmp && \
+        mv /tmp/podcast_hist_tmp "$HISTORY_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# mpv IPC helpers (require socat; degrade gracefully without it)
+# ---------------------------------------------------------------------------
+
+_ipc() {
+    # Send a JSON command to the podcast mpv socket, return raw response
+    command -v socat &>/dev/null || return 1
+    is_running "$PODCAST_PID_FILE" || return 1
+    printf '%s\n' "$1" | socat - "$PODCAST_SOCKET" 2>/dev/null
+}
+
+get_mpv_property() {
+    # get_mpv_property <property>  →  prints value or empty
+    local resp
+    resp=$(_ipc "{\"command\":[\"get_property\",\"$1\"]}") || return
+    printf '%s' "$resp" | grep -o '"data":[^,}]*' | cut -d: -f2 | tr -d '"'
+}
+
+set_mpv_property() {
+    # set_mpv_property <property> <value>
+    _ipc "{\"command\":[\"set_property\",\"$1\",$2]}" > /dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Resume-position persistence
+# ---------------------------------------------------------------------------
+
+save_position() {
+    # Query mpv for the current playback position and URL, then persist them.
+    # Called before stopping or switching tracks.
+    is_running "$PODCAST_PID_FILE" || return
+    local pos url
+    pos=$( get_mpv_property "time-pos") || return
+    url=$(get_mpv_property "path")      || return
+    [[ -z "$pos" || -z "$url" ]] && return
+
+    local pat
+    pat=$(escape_for_grep "$url")
+    if grep -q "^${pat}	" "$POSITIONS_FILE"; then
+        sed -i "s|^${pat}	.*|${url}	${pos}|" "$POSITIONS_FILE"
+    else
+        printf '%s\t%s\n' "$url" "$pos" >> "$POSITIONS_FILE"
+    fi
+}
+
+get_saved_position() {
+    grep "^$(escape_for_grep "$1")	" "$POSITIONS_FILE" | \
+        cut -d$'\t' -f2 | head -n1
+}
+
+clear_position() {
+    sed -i "/^$(escape_for_grep "$1")	/d" "$POSITIONS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Playback
+# ---------------------------------------------------------------------------
+
+play_episode() {
+    local url="$1" title="$2"
+
+    save_position   # save where the previous episode was up to
+
+    kill_pid_file "$PODCAST_PID_FILE"
+    kill_pid_file "$YT_PID_FILE"
+    kill_pid_file "$RADIO_PID_FILE"
+    /usr/bin/mpc pause 2>/dev/null
+
+        local -a mpv_args=(
+        --really-quiet
+        --force-window=yes
+        --window-minimized=yes
+        --speed="$PLAYBACK_SPEED"
+        --input-ipc-server="$PODCAST_SOCKET"
+    )
+
+    if [ "$SKIP_SILENCE" = "yes" ]; then
+        mpv_args+=(--af=silencedetect,scaletempo=speed=pitch)
+    fi
+
+    # Resume prompt
+    local saved_pos
+    saved_pos=$(get_saved_position "$url")
+    if [[ -n "$saved_pos" && "${saved_pos%.*}" -gt 10 ]]; then
+        local resume
+        resume=$(printf "Resume from %s\nStart from beginning" \
+            "$(format_duration "$saved_pos")" | \
+            dmenu -i -l 2 -p "$title")
+        [ -z "$resume" ] && return
+        if [[ "$resume" == "Start from beginning" ]]; then
+            clear_position "$url"
+            saved_pos=""
+        fi
+    fi
+    [[ -n "$saved_pos" ]] && mpv_args+=(--start="$saved_pos")
+
+    mpv "${mpv_args[@]}" "$url" &
+    echo $! > "$PODCAST_PID_FILE"
+
+    add_to_history "$title" "$url"
+    echo "$url" >> "$PLAYED_FILE"   # mark played on first listen
+    notify-send "Podcast" "▶ $title"
+}
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+download_episode() {
+    local url="$1" title="$2" format="$3" outdir="${4:-$DOWNLOAD_DIR}"
+    mkdir -p "$outdir"
+
+    local -a dl_args
+    case "$format" in
+        "MP3")      dl_args=(--extract-audio --audio-format mp3  --audio-quality 0) ;;
+        "FLAC")     dl_args=(--extract-audio --audio-format flac) ;;
+        "Opus")     dl_args=(--extract-audio --audio-format opus) ;;
+        "Original") dl_args=() ;;
+        *)          dl_args=(--extract-audio --audio-quality 0) ;;
+    esac
+
+    notify-send "Podcast" "Downloading: $title"
+    yt-dlp "${dl_args[@]}" \
+        --embed-thumbnail \
+        --embed-metadata \
+        --output "$outdir/%(playlist_title)s/%(title)s.%(ext)s" \
+        "$url" > /tmp/podcast_dl_out 2>&1
+
+    if [ $? -eq 0 ]; then
+        notify-send "Podcast" "Done: $title"
+        echo "$url" >> "$PLAYED_FILE"
+        printf "%s\t%s\t%s\n" \
+            "$(date '+%Y-%m-%d %H:%M')" "$title" "$url" >> "$DOWNLOAD_LOG"
+    else
+        notify-send "Podcast" "Failed: $title"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Feed fetching & caching
+# ---------------------------------------------------------------------------
+
+# Fetch episode list for a feed, using on-disk cache when fresh.
+# Prints tab-separated lines: title \t url \t duration_string \t upload_date
+fetch_episodes() {
+    local feed_url="$1" feed_name="$2"
+    local cache_file="$CACHE_DIR/$(cache_path "$feed_url")"
+
+    if [ -f "$cache_file" ] && [ -s "$cache_file" ]; then
+        local age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
+        if [ "$age" -lt $(( CACHE_TTL * 60 )) ]; then
+            cat "$cache_file"
+            return
+        fi
+    fi
+
+    notify-send "Podcast" "Fetching: $feed_name…"
+    yt-dlp --flat-playlist \
+        --playlist-end "$EPISODE_COUNT" \
+        --print "%(title)s	%(url)s	%(duration_string)s	%(upload_date)s" \
+        "$feed_url" 2>/dev/null | tee "$cache_file"
+}
+
+# Force-refresh a single feed's cache in the background
+refresh_feed_cache() {
+    local feed_url="$1" feed_name="$2"
+    local cache_file="$CACHE_DIR/$(cache_path "$feed_url")"
+    (
+        yt-dlp --flat-playlist \
+            --playlist-end "$EPISODE_COUNT" \
+            --print "%(title)s	%(url)s	%(duration_string)s	%(upload_date)s" \
+            "$feed_url" 2>/dev/null > "$cache_file"
+        notify-send "Podcast" "Updated: $feed_name"
+    ) &
+}
+
+# ---------------------------------------------------------------------------
+# Episode action submenu
+# ---------------------------------------------------------------------------
+episode_action() {
+    local url="$1" title="$2" duration="$3"
+
+    # Build dynamic option list
+    local saved_pos
+    saved_pos=$(get_saved_position "$url")
+
+    local opts=""
+    [[ -n "$saved_pos" && "${saved_pos%.*}" -gt 10 ]] && \
+        opts+="Resume from $(format_duration "$saved_pos")\n"
+    opts+="Play\nDownload\nAdd to Queue"
+    grep -qF "$url" "$QUEUE_FILE" && opts+="\nRemove from Queue"
+    if grep -qF "$url" "$PLAYED_FILE"; then
+        opts+="\nMark as Unplayed"
+    else
+        opts+="\nMark as Played"
+    fi
+    opts+="\nCopy URL"
+
+    local label="$title"
+    [ -n "$duration" ] && label="$title  [$duration]"
+
+    local choice
+    choice=$(printf "$opts" | dmenu -i -l 10 -p "$label")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Resume"*)
+            play_episode "$url" "$title"
+            ;;
+        "Play")
+            clear_position "$url"
+            play_episode "$url" "$title"
+            ;;
+        "Download")
+            local format
+            format=$(printf "MP3\nFLAC\nOpus\nOriginal" | \
+                dmenu -i -l 4 -p "Format")
+            [ -z "$format" ] && return
+            ( download_episode "$url" "$title" "$format" ) &
+            ;;
+        "Add to Queue")
+            printf '%s\t%s\n' "$title" "$url" >> "$QUEUE_FILE"
+            notify-send "Podcast" "Queued: $title"
+            ;;
+        "Remove from Queue")
+            grep -v "	$(escape_for_grep "$url")$" "$QUEUE_FILE" \
+                > /tmp/podcast_queue_tmp && \
+                mv /tmp/podcast_queue_tmp "$QUEUE_FILE"
+            notify-send "Podcast" "Removed from queue"
+            ;;
+        "Mark as Played")
+            echo "$url" >> "$PLAYED_FILE"
+            notify-send "Podcast" "Marked played"
+            ;;
+        "Mark as Unplayed")
+            grep -vF "$url" "$PLAYED_FILE" > /tmp/podcast_played_tmp && \
+                mv /tmp/podcast_played_tmp "$PLAYED_FILE"
+            notify-send "Podcast" "Marked unplayed"
+            ;;
+        "Copy URL")
+            printf '%s' "$url" | xclip -selection clipboard
+            notify-send "Podcast" "URL copied"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Feed browser
+# ---------------------------------------------------------------------------
+browse_feed() {
+    local feed_name="$1" feed_url="$2"
+
+    local episodes
+    episodes=$(fetch_episodes "$feed_url" "$feed_name")
+    [ -z "$episodes" ] && \
+        notify-send "Podcast" "No episodes found." && return
+
+    # Build display lines with played marker ✓, padded columns
+    local display=""
+    local idx=0
+    while IFS=$'\t' read -r ep_title ep_url ep_dur ep_date; do
+        (( idx++ ))
+        local mark="  "
+        grep -qF "$ep_url" "$PLAYED_FILE" 2>/dev/null && mark="✓ "
+
+        # Format date YYYYMMDD → YYYY-MM-DD
+        local date_fmt="$ep_date"
+        [ "${#ep_date}" -eq 8 ] && \
+            date_fmt="${ep_date:0:4}-${ep_date:4:2}-${ep_date:6:2}"
+
+        display+=$(printf "%2d. %s%-50s %-9s %s" \
+            "$idx" "$mark" "$ep_title" "$ep_dur" "$date_fmt")
+        display+=$'\n'
+    done <<< "$episodes"
+
+    local selected
+    selected=$(printf '%s' "$display" | \
+        dmenu -i -l 20 -p "$feed_name (↑↓ browse  Enter: action)")
+    [ -z "$selected" ] && return
+
+    # Parse leading index — always the first token, followed by '.'
+    local raw_idx
+    raw_idx=$(printf '%s' "$selected" | awk '{print $1}' | tr -d '.')
+    [[ ! "$raw_idx" =~ ^[0-9]+$ ]] && return
+
+    local ep_title ep_url ep_dur
+    ep_title=$(printf '%s' "$episodes" | awk -F'\t' "NR==$raw_idx {print \$1}")
+    ep_url=$(printf '%s'   "$episodes" | awk -F'\t' "NR==$raw_idx {print \$2}")
+    ep_dur=$(printf '%s'   "$episodes" | awk -F'\t' "NR==$raw_idx {print \$3}")
+
+    episode_action "$ep_url" "$ep_title" "$ep_dur"
+}
+
+# ---------------------------------------------------------------------------
+# Queue
+# ---------------------------------------------------------------------------
+queue_menu() {
+    local count
+    count=$(grep -c . "$QUEUE_FILE" 2>/dev/null || echo 0)
+
+    if [ "$count" -eq 0 ]; then
+        notify-send "Podcast" "Queue is empty."
+        return
+    fi
+
+    local titles
+    titles=$(awk -F'\t' '{print $1}' "$QUEUE_FILE")
+
+    local selected
+    selected=$(printf "▶ Play All (%s episodes)\n%s\nClear Queue" \
+        "$count" "$titles" | \
+        dmenu -i -l 20 -p "Queue")
+    [ -z "$selected" ] && return
+
+    case "$selected" in
+        "▶ Play All"*)
+            local pl_file="/tmp/podcast_queue.m3u"
+            awk -F'\t' '{print $2}' "$QUEUE_FILE" > "$pl_file"
+            save_position
+            kill_pid_file "$PODCAST_PID_FILE"
+            kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$RADIO_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+            mpv --no-video --really-quiet \
+                --speed="$PLAYBACK_SPEED" \
+                --input-ipc-server="$PODCAST_SOCKET" \
+                --playlist="$pl_file" &
+            echo $! > "$PODCAST_PID_FILE"
+            notify-send "Podcast" "Playing queue ($count episodes)"
+            ;;
+        "Clear Queue")
+            > "$QUEUE_FILE"
+            notify-send "Podcast" "Queue cleared."
+            ;;
+        *)
+            local ep_url ep_title
+            ep_title="$selected"
+            ep_url=$(grep "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" | \
+                awk -F'\t' '{print $2}' | head -n1)
+            [ -z "$ep_url" ] && return
+
+            local action
+            action=$(printf "Play\nRemove from Queue\nMove to Top" | \
+                dmenu -i -l 3 -p "$ep_title")
+            case "$action" in
+                "Play")
+                    play_episode "$ep_url" "$ep_title"
+                    ;;
+                "Remove from Queue")
+                    grep -v "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" \
+                        > /tmp/podcast_queue_tmp && \
+                        mv /tmp/podcast_queue_tmp "$QUEUE_FILE"
+                    notify-send "Podcast" "Removed from queue"
+                    ;;
+                "Move to Top")
+                    local entry
+                    entry=$(grep "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" | head -n1)
+                    grep -v "^$(escape_for_grep "$ep_title")	" "$QUEUE_FILE" \
+                        > /tmp/podcast_queue_tmp
+                    { printf '%s\n' "$entry"; cat /tmp/podcast_queue_tmp; } > "$QUEUE_FILE"
+                    notify-send "Podcast" "Moved to top"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Episode search across cached feeds
+# ---------------------------------------------------------------------------
+search_episodes() {
+    local query
+    query=$(echo "" | dmenu -p "Search episodes (cached feeds only)")
+    [ -z "$query" ] && return
+
+    # Collect matching lines from all caches, tag with feed name
+    local all_results=""
+    while IFS=$'\t' read -r feed_name feed_url; do
+        local cache_file="$CACHE_DIR/$(cache_path "$feed_url")"
+        [ -f "$cache_file" ] || continue
+        local matches
+        matches=$(grep -i "$query" "$cache_file" | \
+            awk -F'\t' -v fn="$feed_name" '{print $0 "\t" fn}')
+        [ -n "$matches" ] && all_results+="$matches"$'\n'
+    done < "$FEEDS_FILE"
+
+    if [ -z "$all_results" ]; then
+        notify-send "Podcast" "No cached results for: $query"$'\n'"(Try updating feeds first)"
+        return
+    fi
+
+    # Display: index  [Feed Name]  Episode Title  Duration
+    local display=""
+    local idx=0
+    while IFS=$'\t' read -r ep_title ep_url ep_dur ep_date feed_name; do
+        [ -z "$ep_url" ] && continue
+        (( idx++ ))
+        display+=$(printf "%2d. [%-18s] %-42s %s" \
+            "$idx" "$feed_name" "$ep_title" "$ep_dur")
+        display+=$'\n'
+    done <<< "$all_results"
+
+    local selected
+    selected=$(printf '%s' "$display" | dmenu -i -l 20 -p "Results: $query")
+    [ -z "$selected" ] && return
+
+    local raw_idx
+    raw_idx=$(printf '%s' "$selected" | awk '{print $1}' | tr -d '.')
+    [[ ! "$raw_idx" =~ ^[0-9]+$ ]] && return
+
+    local ep_title ep_url ep_dur
+    ep_title=$(printf '%s' "$all_results" | awk -F'\t' "NR==$raw_idx {print \$1}")
+    ep_url=$(printf '%s'   "$all_results" | awk -F'\t' "NR==$raw_idx {print \$2}")
+    ep_dur=$(printf '%s'   "$all_results" | awk -F'\t' "NR==$raw_idx {print \$3}")
+
+    episode_action "$ep_url" "$ep_title" "$ep_dur"
+}
+
+# ---------------------------------------------------------------------------
+# Subscriptions
+# ---------------------------------------------------------------------------
+
+add_feed() {
+    local url
+    url=$(echo "" | dmenu -p "Feed URL (RSS, Atom, or podcast page)")
+    [ -z "$url" ] && return
+
+    if grep -qF "$url" "$FEEDS_FILE" 2>/dev/null; then
+        notify-send "Podcast" "Already subscribed."
+        return
+    fi
+
+    notify-send "Podcast" "Fetching feed info…"
+
+    # Try yt-dlp for the playlist/channel title
+    local name
+    name=$(yt-dlp --flat-playlist --playlist-end 1 \
+        --print "%(playlist_title)s" "$url" 2>/dev/null | \
+        grep -v '^$' | head -n1)
+
+    # Fallback: parse RSS <channel><title> directly
+    if [ -z "$name" ]; then
+        name=$(curl -s --max-time 10 "$url" | \
+            awk '
+                /<title>/ {
+                    gsub(/<\/?title>|<!\[CDATA\[|\]\]>/, "")
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+                    print; exit
+                }')
+    fi
+
+    # Last resort: ask the user
+    if [ -z "$name" ]; then
+        name=$(echo "" | dmenu -p "Feed name (could not auto-detect)")
+        [ -z "$name" ] && return
+    fi
+
+    printf '%s\t%s\n' "$name" "$url" >> "$FEEDS_FILE"
+    notify-send "Podcast" "Subscribed: $name"
+
+    # Offer to pre-cache episodes
+    local fetch
+    fetch=$(printf "Yes\nNo" | dmenu -i -l 2 -p "Fetch episodes now?")
+    [ "$fetch" = "Yes" ] && refresh_feed_cache "$url" "$name"
+}
+
+remove_feed() {
+    [ ! -s "$FEEDS_FILE" ] && notify-send "Podcast" "No feeds." && return
+
+    local feed_name
+    feed_name=$(awk -F'\t' '{print $1}' "$FEEDS_FILE" | \
+        dmenu -i -l 20 -p "Remove which feed?")
+    [ -z "$feed_name" ] && return
+
+    local feed_url
+    feed_url=$(grep "^$(escape_for_grep "$feed_name")	" "$FEEDS_FILE" | \
+        awk -F'\t' '{print $2}' | head -n1)
+
+    grep -v "^$(escape_for_grep "$feed_name")	" "$FEEDS_FILE" \
+        > /tmp/podcast_feeds_tmp && mv /tmp/podcast_feeds_tmp "$FEEDS_FILE"
+
+    [ -n "$feed_url" ] && \
+        rm -f "$CACHE_DIR/$(cache_path "$feed_url")"
+
+    notify-send "Podcast" "Removed: $feed_name"
+}
+
+import_opml() {
+    local file
+    file=$(echo "" | dmenu -p "OPML file path (tab-complete won't work here)")
+    [ -z "$file" ] && return
+    [ -f "$file" ] || { notify-send "Podcast" "File not found: $file"; return; }
+
+    local count=0
+    while IFS= read -r line; do
+        local url name
+        url=$(printf '%s' "$line" | grep -o 'xmlUrl="[^"]*"' | \
+            sed 's/xmlUrl="//;s/"//')
+        name=$(printf '%s' "$line" | grep -o 'text="[^"]*"' | head -n1 | \
+            sed 's/text="//;s/"//')
+        [ -z "$url" ] && continue
+        [ -z "$name" ] && name="$url"
+        if ! grep -qF "$url" "$FEEDS_FILE"; then
+            printf '%s\t%s\n' "$name" "$url" >> "$FEEDS_FILE"
+            (( count++ ))
+        fi
+    done < "$file"
+
+    notify-send "Podcast" "Imported $count new feeds from OPML."
+}
+
+update_all_feeds() {
+    local count
+    count=$(grep -c . "$FEEDS_FILE" 2>/dev/null || echo 0)
+    [ "$count" -eq 0 ] && notify-send "Podcast" "No feeds subscribed." && return
+    notify-send "Podcast" "Updating $count feeds in background…"
+    (
+        local done=0
+        while IFS=$'\t' read -r feed_name feed_url; do
+            yt-dlp --flat-playlist \
+                --playlist-end "$EPISODE_COUNT" \
+                --print "%(title)s	%(url)s	%(duration_string)s	%(upload_date)s" \
+                "$feed_url" 2>/dev/null \
+                > "$CACHE_DIR/$(cache_path "$feed_url")"
+            (( done++ ))
+        done < "$FEEDS_FILE"
+        notify-send "Podcast" "All $done feeds updated."
+    ) &
+}
+
+subscriptions_menu() {
+    local count
+    count=$(grep -c . "$FEEDS_FILE" 2>/dev/null || echo 0)
+
+    local choice
+    choice=$(printf "Add Feed\nImport OPML\nRemove Feed\nUpdate All Feeds\nList (%s feeds)" \
+        "$count" | \
+        dmenu -i -l 6 -p "Subscriptions")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Add Feed")        add_feed ;;
+        "Import OPML")     import_opml ;;
+        "Remove Feed")     remove_feed ;;
+        "Update All"*)     update_all_feeds ;;
+        "List"*)
+            [ "$count" -eq 0 ] && notify-send "Podcast" "No feeds yet." && return
+            local sel_name
+            sel_name=$(awk -F'\t' '{print $1}' "$FEEDS_FILE" | \
+                dmenu -i -l 20 -p "Feeds — pick to browse")
+            [ -z "$sel_name" ] && return
+            local sel_url
+            sel_url=$(grep "^$(escape_for_grep "$sel_name")	" "$FEEDS_FILE" | \
+                awk -F'\t' '{print $2}')
+            [ -n "$sel_url" ] && browse_feed "$sel_name" "$sel_url"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Speed control (adjusts live via IPC, persists setting)
+# ---------------------------------------------------------------------------
+speed_control() {
+    local current="$PLAYBACK_SPEED"
+    # Read live speed if mpv is running
+    local live_speed
+    live_speed=$(get_mpv_property "speed") && current="$live_speed"
+
+    local val
+    val=$(printf "0.75\n1.0\n1.25\n1.5\n1.75\n2.0\n2.5" | \
+        dmenu -i -l 7 -p "Speed (current: ${current}x)")
+    [ -z "$val" ] && return
+
+    save_setting "PLAYBACK_SPEED" "$val"
+    PLAYBACK_SPEED="$val"
+
+    # Apply immediately to the running instance
+    set_mpv_property "speed" "$val"
+    notify-send "Podcast" "Speed: ${val}x"
+}
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+settings_menu() {
+    local choice
+    choice=$(printf \
+"Playback Speed  [${PLAYBACK_SPEED}x]\nSkip Silence    [$SKIP_SILENCE]\nDownload Dir    [$DOWNLOAD_DIR]\nEpisodes/Feed   [$EPISODE_COUNT]\nCache TTL       [${CACHE_TTL} min]\nClear Played History\nClear Position Data\nClear Episode Cache" | \
+        dmenu -i -l 10 -p "Settings")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Playback Speed"*)
+            speed_control
+            ;;
+        "Skip Silence"*)
+            local val
+            val=$(printf "yes\nno" | dmenu -i -l 2 \
+                -p "Skip silence (current: $SKIP_SILENCE)")
+            [ -z "$val" ] && return
+            save_setting "SKIP_SILENCE" "$val"
+            SKIP_SILENCE="$val"
+            notify-send "Podcast" "Skip silence: $val"
+            ;;
+        "Download Dir"*)
+            local val
+            val=$(echo "$DOWNLOAD_DIR" | dmenu -p "Download directory")
+            [ -z "$val" ] && return
+            mkdir -p "$val"
+            save_setting "DOWNLOAD_DIR" "$val"
+            notify-send "Podcast" "Download dir: $val"
+            ;;
+        "Episodes/Feed"*)
+            local val
+            val=$(printf "10\n20\n30\n50\n100" | dmenu -i -l 5 \
+                -p "Episodes per feed (current: $EPISODE_COUNT)")
+            [ -z "$val" ] && return
+            save_setting "EPISODE_COUNT" "$val"
+            notify-send "Podcast" "Episodes per feed: $val"
+            ;;
+        "Cache TTL"*)
+            local val
+            val=$(printf "15\n30\n60\n120\n360" | dmenu -i -l 5 \
+                -p "Cache TTL minutes (current: $CACHE_TTL)")
+            [ -z "$val" ] && return
+            save_setting "CACHE_TTL" "$val"
+            notify-send "Podcast" "Cache TTL: ${val} min"
+            ;;
+        "Clear Played History")
+            > "$PLAYED_FILE"
+            notify-send "Podcast" "Played history cleared."
+            ;;
+        "Clear Position Data")
+            > "$POSITIONS_FILE"
+            notify-send "Podcast" "Position data cleared."
+            ;;
+        "Clear Episode Cache")
+            rm -f "$CACHE_DIR"/*
+            notify-send "Podcast" "Episode cache cleared."
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+podcast_status=""
+is_running "$PODCAST_PID_FILE" && podcast_status=" [PLAYING ${PLAYBACK_SPEED}x]"
+
+queue_count=$(grep -c . "$QUEUE_FILE" 2>/dev/null || echo 0)
+new_count=0  # could be computed from cache vs played, kept simple for now
+
+choice=$(printf \
+    "Browse Feeds\nSearch Episodes\nQueue [$queue_count]\nHistory\nSubscriptions\nSpeed [${PLAYBACK_SPEED}x]\nStop\nSettings" | \
+    dmenu -i -l 10 -p "Podcasts${podcast_status}")
+[ -z "$choice" ] && exit
+
+case "$choice" in
+    "Browse Feeds")
+        if [ ! -s "$FEEDS_FILE" ]; then
+            notify-send "Podcast" "No feeds yet. Go to Subscriptions → Add Feed."
+            exit
+        fi
+        sel_name=$(awk -F'\t' '{print $1}' "$FEEDS_FILE" | \
+            dmenu -i -l 20 -p "Select Feed")
+        [ -z "$sel_name" ] && exit
+        sel_url=$(grep "^$(escape_for_grep "$sel_name")	" "$FEEDS_FILE" | \
+            awk -F'\t' '{print $2}')
+        [ -z "$sel_url" ] && exit
+        browse_feed "$sel_name" "$sel_url"
+        ;;
+    "Search Episodes")
+        search_episodes
+        ;;
+    "Queue"*)
+        queue_menu
+        ;;
+    "History")
+        [ ! -s "$HISTORY_FILE" ] && \
+            notify-send "Podcast" "No history yet." && exit
+        entry=$(grep "^#EXTINF" "$HISTORY_FILE" | \
+            sed 's/#EXTINF:-1,//' | \
+            dmenu -i -l 20 -p "History")
+        [ -z "$entry" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$entry")$" \
+            "$HISTORY_FILE" | tail -n1)
+        [[ -n "$url" && "$url" != \#* ]] && episode_action "$url" "$entry" ""
+        ;;
+    "Subscriptions")
+        subscriptions_menu
+        ;;
+    "Speed"*)
+        speed_control
+        ;;
+    "Stop")
+        if is_running "$PODCAST_PID_FILE"; then
+            save_position
+            kill_pid_file "$PODCAST_PID_FILE"
+            notify-send "Podcast" "Stopped."
+        else
+            notify-send "Podcast" "Nothing playing."
+        fi
+        ;;
+    "Settings")
+        settings_menu
+        ;;
+esac
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+radio_status=""
+is_running "$RADIO_PID_FILE" && radio_status=" [LIVE]"
+
+choice=$(printf "Play Station\nStop Radio\nAdd Station\nRemove Station\nList Stations" | \
+    dmenu -i -l 10 -p "Radio$radio_status")
+
+case "$choice" in
+    "Play Station")
+        if [ ! -s "$RADIO_FILE" ]; then
+            notify-send "Radio" "No stations saved yet."
+            exit
+        fi
+        station=$(grep "^#EXTINF" "$RADIO_FILE" | sed 's/#EXTINF:-1,//' | \
+            dmenu -i -l 20 -p "Select station")
+        [ -z "$station" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$station$" "$RADIO_FILE" | tail -n1)
+        if [ -n "$url" ]; then
+            kill_pid_file "$RADIO_PID_FILE"
+            kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$PODCAST_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+           mpv --really-quiet \
+    --force-window=yes \
+    --window-minimized=yes \
+    --input-ipc-server="$RADIO_SOCKET" \
+    "$url" &
+            echo $! > "$RADIO_PID_FILE"
+            notify-send "Radio" "Now playing: $station"
+        fi
+        ;;
+    "Stop Radio")
+        if is_running "$RADIO_PID_FILE"; then
+            kill_pid_file "$RADIO_PID_FILE"
+            notify-send "Radio" "Stopped."
+        else
+            notify-send "Radio" "Nothing is playing."
+        fi
+        ;;
+    "Add Station")
+        url=$(echo "" | dmenu -p "Enter stream URL")
+        [ -z "$url" ] && exit
+        name=$(echo "" | dmenu -p "Enter station name")
+        [ -z "$name" ] && exit
+        if grep -q "^#EXTINF:-1,$name$" "$RADIO_FILE"; then
+            notify-send "Radio" "Station '$name' already exists."
+            exit
+        fi
+        printf "#EXTINF:-1,%s\n%s\n" "$name" "$url" >> "$RADIO_FILE"
+        notify-send "Radio" "Added: $name"
+        ;;
+    "Remove Station")
+        if [ ! -s "$RADIO_FILE" ]; then
+            notify-send "Radio" "No stations saved yet."
+            exit
+        fi
+        station=$(grep "^#EXTINF" "$RADIO_FILE" | sed 's/#EXTINF:-1,//' | \
+            dmenu -i -l 20 -p "Remove which?")
+        [ -z "$station" ] && exit
+        sed -i "/^#EXTINF:-1,$station$/{N;d;}" "$RADIO_FILE"
+        notify-send "Radio" "Removed: $station"
+        ;;
+    "List Stations")
+        if [ ! -s "$RADIO_FILE" ]; then
+            notify-send "Radio" "No stations saved yet."
+            exit
+        fi
+        notify-send "Radio Stations" "$(grep "^#EXTINF" "$RADIO_FILE" | \
+            sed 's/#EXTINF:-1,//' | nl -ba)"
+        ;;
+esac
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+SLEEP_PID_FILE="/tmp/sleeptimer.pid"
+SLEEP_TIME_FILE="/tmp/sleeptimer.time"
+
+is_timer_running() {
+    [ -f "$SLEEP_PID_FILE" ] && kill -0 "$(cat "$SLEEP_PID_FILE")" 2>/dev/null
+}
+
+cancel_timer() {
+    if is_timer_running; then
+        kill "$(cat "$SLEEP_PID_FILE")" 2>/dev/null
+        rm -f "$SLEEP_PID_FILE" "$SLEEP_TIME_FILE"
+        notify-send "Sleep Timer" "Timer cancelled."
+    fi
+}
+
+fade_and_kill() {
+    local pid_file="$1"
+    local socket="$2"
+
+    for vol in 80 60 40 20 5; do
+        echo "{\"command\":[\"set_property\",\"volume\",$vol]}" | \
+            socat - "$socket" 2>/dev/null
+        sleep 6
+    done
+    kill_pid_file "$pid_file"
+}
+
+fade_and_stop() {
+    local seconds="$1"
+    sleep "$seconds"
+
+    if is_running "$YT_PID_FILE"; then
+        fade_and_kill "$YT_PID_FILE" "$YT_SOCKET"
+
+    elif is_running "$RADIO_PID_FILE"; then
+        fade_and_kill "$RADIO_PID_FILE" "$RADIO_SOCKET"
+
+    elif is_running "$PODCAST_PID_FILE"; then
+        fade_and_kill "$PODCAST_PID_FILE" "$PODCAST_SOCKET"
+
+    else
+        # MPC fallback
+        for vol in 80 60 40 20 5; do
+            /usr/bin/mpc volume "$vol" 2>/dev/null
+            sleep 6
+        done
+        /usr/bin/mpc stop 2>/dev/null
+        /usr/bin/mpc volume 100 2>/dev/null
+    fi
+
+    rm -f "$SLEEP_PID_FILE" "$SLEEP_TIME_FILE"
+    notify-send "Sleep Timer" "Goodnight."
+}
+
+
+# Status
+timer_status=""
+if is_timer_running; then
+    end_time=$(cat "$SLEEP_TIME_FILE" 2>/dev/null)
+    now=$(date +%s)
+    remaining=$(( end_time - now ))
+    mins=$(( remaining / 60 ))
+    timer_status=" [${mins}m left]"
+fi
+
+choice=$(printf "15 minutes\n30 minutes\n45 minutes\n60 minutes\n90 minutes\nCustom\nCancel Timer" | \
+    dmenu -i -l 10 -p "Sleep Timer$timer_status")
+
+[ -z "$choice" ] && exit
+
+case "$choice" in
+    "15 minutes")  secs=900  ;;
+    "30 minutes")  secs=1800 ;;
+    "45 minutes")  secs=2700 ;;
+    "60 minutes")  secs=3600 ;;
+    "90 minutes")  secs=5400 ;;
+    "Custom")
+        custom=$(echo "" | dmenu -p "Minutes until sleep")
+        [[ ! "$custom" =~ ^[0-9]+$ ]] && notify-send "Sleep Timer" "Invalid input." && exit
+        secs=$(( custom * 60 ))
+        ;;
+    "Cancel Timer")
+        cancel_timer
+        exit
+        ;;
+esac
+
+# Cancel any existing timer before setting new one
+cancel_timer 2>/dev/null
+
+# Subtract 30s fade time from sleep so total = chosen duration
+fade_duration=30
+sleep_secs=$(( secs - fade_duration ))
+[ "$sleep_secs" -lt 0 ] && sleep_secs=0
+
+# Save end time for status display
+echo $(( $(date +%s) + secs )) > "$SLEEP_TIME_FILE"
+
+# Run in background
+( fade_and_stop "$sleep_secs" ) &
+echo $! > "$SLEEP_PID_FILE"
+
+mins=$(( secs / 60 ))
+notify-send "Sleep Timer" "Stopping in ${mins} minutes. Goodnight 🌙"
+#!/bin/bash
+source "$HOME/.local/bin/menu/music/lib/common"
+
+YT_HISTORY_FILE="$HOME/.local/share/music-menu/yt_history"
+YT_SETTINGS_FILE="$HOME/.local/share/music-menu/yt_settings"
+DOWNLOAD_LOG="$HOME/.local/share/music-menu/download_log"
+# YT_FILE must exist in common; define a fallback so saved_menu never
+# operates on an empty path.
+: "${YT_FILE:=$HOME/.local/share/music-menu/yt_saved}"
+
+[ -f "$YT_HISTORY_FILE" ] || touch "$YT_HISTORY_FILE"
+[ -f "$YT_FILE" ]         || touch "$YT_FILE"
+[ -f "$DOWNLOAD_LOG" ]    || touch "$DOWNLOAD_LOG"
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+load_settings() {
+    DOWNLOAD_DIR="$HOME/Music/Downloads"
+    PLAYBACK_MODE="audio"       # audio | video | thumbnail
+    DOWNLOAD_FORMAT="MP3"       # MP3 | FLAC | M4A | Best Audio
+    SEARCH_RESULTS=15
+    [ -f "$YT_SETTINGS_FILE" ] && source "$YT_SETTINGS_FILE"
+    mkdir -p "$DOWNLOAD_DIR"
+}
+
+save_setting() {
+    local key="$1" val="$2"
+    touch "$YT_SETTINGS_FILE"
+    if grep -q "^${key}=" "$YT_SETTINGS_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$YT_SETTINGS_FILE"
+    else
+        echo "${key}=\"${val}\"" >> "$YT_SETTINGS_FILE"
+    fi
+}
+
+load_settings
+
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
+
+add_to_history() {
+    local title="$1" url="$2"
+    # Remove any existing entry for this title first
+    sed -i "/^#EXTINF:-1,$(printf '%s' "$title" | sed 's/[[\.*^$()+?{}|]/\\&/g')$/{N;d;}" \
+        "$YT_HISTORY_FILE"
+    printf "#EXTINF:-1,%s\n%s\n" "$title" "$url" | \
+        cat - "$YT_HISTORY_FILE" > /tmp/yt_hist_tmp && \
+        mv /tmp/yt_hist_tmp "$YT_HISTORY_FILE"
+}
+
+# Escape a string for use as a fixed grep pattern (-F) or a basic regex.
+# Used when grepping for exact title lines in M3U files.
+escape_for_grep() {
+    printf '%s' "$1" | sed 's/[[\.*^$()+?{}|]/\\&/g'
+}
+
+pick_format() {
+    printf "MP3\nFLAC\nM4A\nBest Audio" | \
+        dmenu -i -l 5 -p "Format (default: $DOWNLOAD_FORMAT)"
+}
+
+# Build yt-dlp audio args into a global array DL_ARGS.
+# FIX: was an unquoted string — breaks on "Best Audio" (space) and any
+#      format with spaces passed to yt-dlp.
+set_dl_args() {
+    local format="$1"
+    case "$format" in
+        "MP3")        DL_ARGS=(--extract-audio --audio-format mp3  --audio-quality 0) ;;
+        "FLAC")       DL_ARGS=(--extract-audio --audio-format flac) ;;
+        "M4A")        DL_ARGS=(--extract-audio --audio-format m4a  --audio-quality 0) ;;
+        "Best Audio") DL_ARGS=(--extract-audio --audio-quality 0) ;;
+        *)            DL_ARGS=(--extract-audio --audio-quality 0) ;;
+    esac
+}
+
+play_url() {
+    local url="$1" title="$2"
+    kill_pid_file "$YT_PID_FILE"
+    kill_pid_file "$RADIO_PID_FILE"
+    kill_pid_file "$PODCAST_PID_FILE"
+    /usr/bin/mpc pause 2>/dev/null
+
+    case "$PLAYBACK_MODE" in
+        "audio")
+           mpv --really-quiet \
+    --ytdl-format="bestaudio" \
+    --vid=no \                       # <-- disable video track entirely
+    --force-window=yes \
+    --window-minimized=yes \
+    --input-ipc-server="$YT_SOCKET" \
+    "$url" &
+            ;;
+        "video")
+            mpv --really-quiet \
+                --ytdl-format="bestvideo+bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                "$url" &
+            ;;
+        "thumbnail")
+            local thumb
+            thumb=$(yt-dlp --get-thumbnail "$url" 2>/dev/null)
+            if [ -n "$thumb" ]; then
+                curl -s "$thumb" -o /tmp/yt_thumb.jpg 2>/dev/null
+                feh --title "yt-thumb" --geometry 400x400 /tmp/yt_thumb.jpg &
+            fi
+            mpv --no-video --really-quiet \
+                --ytdl-format="bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                "$url" &
+            ;;
+    esac
+
+    echo $! > "$YT_PID_FILE"
+    add_to_history "$title" "$url"
+    notify-send "YouTube" "Playing: $title"
+}
+
+download_url() {
+    local url="$1" title="$2" format="$3" outdir="${4:-$DOWNLOAD_DIR}"
+    mkdir -p "$outdir"
+    set_dl_args "$format"
+    notify-send "Download" "Starting: $title"
+    yt-dlp "${DL_ARGS[@]}" \
+        --embed-thumbnail \
+        --embed-metadata \
+        --output "$outdir/%(title)s.%(ext)s" \
+        "$url" > /tmp/yt_dl_out 2>&1
+    if [ $? -eq 0 ]; then
+        notify-send "Download" "Done: $title"
+        printf "%s\t%s\t%s\n" \
+            "$(date '+%Y-%m-%d %H:%M')" "$title" "$url" >> "$DOWNLOAD_LOG"
+    else
+        notify-send "Download" "Failed: $title"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Parse flags from query
+# Sets globals: SEARCH_TYPE  CLEAN_QUERY
+# lv <query> → live search.  Everything else → video search.
+# ---------------------------------------------------------------------------
+parse_query() {
+    local raw="$1"
+    if echo "$raw" | grep -qi "^lv "; then
+        SEARCH_TYPE="live"
+        CLEAN_QUERY=$(echo "$raw" | sed 's/^[Ll][Vv] //')
+    else
+        SEARCH_TYPE="video"
+        CLEAN_QUERY="$raw"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Run search → tab-separated lines: title \t url \t info
+# ---------------------------------------------------------------------------
+run_search() {
+    local query="$1" type="$2"
+    case "$type" in
+        "live")
+            notify-send "YouTube" "Searching live: $query..."
+            yt-dlp "ytsearch$SEARCH_RESULTS:$query" \
+                --match-filter "is_live" \
+                --print "%(title)s	%(webpage_url)s	LIVE" \
+                2>/dev/null
+            ;;
+        "video")
+            notify-send "YouTube" "Searching: $query..."
+            yt-dlp "ytsearch$SEARCH_RESULTS:$query" \
+                --print "%(title)s	%(webpage_url)s	%(duration_string)s" \
+                --no-playlist 2>/dev/null
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Show results in dmenu → prints "url\ttitle" to stdout.
+#
+# FIX (was the main breakage): the old approach stripped the trailing info
+# column from the selected display line to reconstruct the title, then
+# grep'd for it.  This was doubly broken:
+#   1. The strip-regex ate the last word of titles ending in alphanumerics.
+#   2. Titles with regex metacharacters or pipes caused wrong matches.
+#
+# New approach: prefix each display row with a 1-based index; after the
+# user selects, parse the index and look up the original data directly.
+# ---------------------------------------------------------------------------
+pick_result() {
+    local results="$1" prompt="$2"
+    [ -z "$results" ] && notify-send "YouTube" "No results found." && return 1
+
+    # Build display: " 1. <title padded to 60>  <info>"
+    local display
+    display=$(echo "$results" | awk -F'\t' '{printf "%2d. %-60s %s\n", NR, $1, $3}')
+
+    local selected
+    selected=$(echo "$display" | dmenu -i -l 15 -p "$prompt")
+    [ -z "$selected" ] && return 1
+
+    # Extract the leading index number
+    local idx
+    idx=$(echo "$selected" | awk '{print $1}' | tr -d '.')
+    if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+        notify-send "YouTube" "Could not parse selection."
+        return 1
+    fi
+
+    local url title
+    url=$(echo   "$results" | awk -F'\t' "NR==$idx {print \$2}")
+    title=$(echo "$results" | awk -F'\t' "NR==$idx {print \$1}")
+
+    [ -z "$url" ] && notify-send "YouTube" "No URL for selection." && return 1
+
+    # Output as tab-separated (titles never contain literal tabs)
+    printf '%s\t%s' "$url" "$title"
+}
+
+# ---------------------------------------------------------------------------
+# Playlist: browse tracks, play or download one / all
+# ---------------------------------------------------------------------------
+handle_playlist() {
+    local url="$1" playlist_title="$2" mode="$3"
+    notify-send "YouTube" "Fetching: $playlist_title..."
+
+    local tracks
+    tracks=$(yt-dlp --flat-playlist \
+        --print "%(title)s	%(webpage_url)s" \
+        "$url" 2>/dev/null)
+    [ -z "$tracks" ] && notify-send "YouTube" "Could not fetch playlist." && return
+
+    local track_count
+    track_count=$(echo "$tracks" | wc -l)
+
+    local selected
+    selected=$(printf "▶ Play All (%s tracks)\n%s" \
+        "$track_count" \
+        "$(echo "$tracks" | awk -F'\t' '{print $1}')" | \
+        dmenu -i -l 20 -p "$playlist_title")
+    [ -z "$selected" ] && return
+
+    if [ "$selected" = "▶ Play All ($track_count tracks)" ]; then
+        if [ "$mode" = "download" ]; then
+            local format
+            format=$(pick_format)
+            [ -z "$format" ] && return
+            (
+                set_dl_args "$format"
+                notify-send "Download" "Downloading: $playlist_title ($track_count tracks)"
+                mkdir -p "$DOWNLOAD_DIR/$playlist_title"
+                yt-dlp "${DL_ARGS[@]}" \
+                    --embed-thumbnail --embed-metadata \
+                    --yes-playlist \
+                    --output "$DOWNLOAD_DIR/$playlist_title/%(playlist_index)s - %(title)s.%(ext)s" \
+                    "$url" > /tmp/yt_dl_out 2>&1
+                notify-send "Download" "Done: $playlist_title"
+                printf "%s\t%s\t%s\n" \
+                    "$(date '+%Y-%m-%d %H:%M')" "$playlist_title" "$url" >> "$DOWNLOAD_LOG"
+            ) &
+        else
+            local pl_file="/tmp/yt_playlist.txt"
+            echo "$tracks" | awk -F'\t' '{print $2}' > "$pl_file"
+            kill_pid_file "$YT_PID_FILE"
+            kill_pid_file "$RADIO_PID_FILE"
+            /usr/bin/mpc pause 2>/dev/null
+            mpv --no-video --really-quiet \
+                --ytdl-format="bestaudio" \
+                --input-ipc-server="$YT_SOCKET" \
+                --playlist="$pl_file" &
+            echo $! > "$YT_PID_FILE"
+            add_to_history "$playlist_title" "$url"
+            notify-send "YouTube" "Playing playlist: $playlist_title"
+        fi
+    else
+        # Single track — find by exact title (tab-delimited, so safe)
+        local track_url
+        track_url=$(echo "$tracks" | awk -F'\t' -v t="$selected" '$1==t {print $2; exit}')
+        [ -z "$track_url" ] && return
+        if [ "$mode" = "download" ]; then
+            local format
+            format=$(pick_format)
+            [ -z "$format" ] && return
+            ( download_url "$track_url" "$selected" "$format" ) &
+        else
+            play_url "$track_url" "$selected"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Search & play/download flow
+# ---------------------------------------------------------------------------
+search_flow() {
+    local mode="$1"   # play | download
+    local prompt_hint
+    if [ "$mode" = "play" ]; then
+        prompt_hint="Search / URL / history  (lv: live)"
+    else
+        prompt_hint="Search or paste URL to download  (lv: live)"
+    fi
+
+    local input
+    if [ "$mode" = "play" ]; then
+        input=$(grep "^#EXTINF" "$YT_HISTORY_FILE" | \
+            sed 's/#EXTINF:-1,//' | head -n20 | \
+            dmenu -i -l 20 -p "$prompt_hint")
+    else
+        input=$(echo "" | dmenu -p "$prompt_hint")
+    fi
+    [ -z "$input" ] && return
+
+    # --- URL path: input looks like a URL ---
+    if echo "$input" | grep -qE '^https?://'; then
+        # Playlist URL (has list= parameter)
+        if echo "$input" | grep -qE '[?&]list='; then
+            notify-send "YouTube" "Fetching playlist info..."
+            local playlist_title
+            playlist_title=$(yt-dlp --flat-playlist \
+                --print "%(playlist_title)s" "$input" 2>/dev/null | \
+                grep -v '^$' | head -n1)
+            [ -z "$playlist_title" ] && playlist_title="Playlist"
+            handle_playlist "$input" "$playlist_title" "$mode"
+        else
+            # Single video URL — fetch title for history then play/download
+            notify-send "YouTube" "Fetching title..."
+            local title
+            title=$(yt-dlp --get-title "$input" 2>/dev/null | head -n1)
+            [ -z "$title" ] && title="$input"
+            if [ "$mode" = "download" ]; then
+                local format
+                format=$(pick_format)
+                [ -z "$format" ] && return
+                ( download_url "$input" "$title" "$format" ) &
+            else
+                play_url "$input" "$title"
+            fi
+        fi
+        return
+    fi
+
+    # --- History exact-match check (play mode only) ---
+    if [ "$mode" = "play" ]; then
+        local pattern
+        pattern=$(escape_for_grep "$input")
+        local hist_url
+        hist_url=$(grep -A1 "^#EXTINF:-1,${pattern}$" "$YT_HISTORY_FILE" | tail -n1)
+        if [ -n "$hist_url" ] && [[ "$hist_url" != \#* ]]; then
+            play_url "$hist_url" "$input"
+            return
+        fi
+    fi
+
+    # --- Normal search path ---
+    parse_query "$input"
+
+    local results
+    results=$(run_search "$CLEAN_QUERY" "$SEARCH_TYPE")
+    [ -z "$results" ] && return
+
+    local result
+    result=$(pick_result "$results" "$CLEAN_QUERY") || return
+    local url title
+    url=$(printf '%s' "$result"  | cut -d$'\t' -f1)
+    title=$(printf '%s' "$result" | cut -d$'\t' -f2-)
+
+    if [ "$mode" = "download" ]; then
+        local format
+        format=$(pick_format)
+        [ -z "$format" ] && return
+        ( download_url "$url" "$title" "$format" ) &
+    else
+        play_url "$url" "$title"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Saved submenu
+# ---------------------------------------------------------------------------
+saved_menu() {
+    local choice
+    choice=$(printf "List\nAdd\nRemove" | dmenu -i -l 5 -p "Saved")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "List")
+            if [ ! -s "$YT_FILE" ]; then
+                notify-send "YouTube" "No saved URLs yet."
+                return
+            fi
+            local entry
+            entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
+                dmenu -i -l 20 -p "Saved — pick to play")
+            [ -z "$entry" ] && return
+            local url
+            url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$entry")$" "$YT_FILE" | tail -n1)
+            [ -n "$url" ] && [[ "$url" != \#* ]] && play_url "$url" "$entry"
+            ;;
+        "Add")
+            local input
+            input=$(grep "^#EXTINF" "$YT_HISTORY_FILE" | \
+                sed 's/#EXTINF:-1,//' | head -n20 | \
+                dmenu -i -l 20 -p "Pick from history or paste URL to save")
+            [ -z "$input" ] && return
+            local url title
+            url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$input")$" \
+                "$YT_HISTORY_FILE" | tail -n1)
+            if [ -n "$url" ] && [[ "$url" != \#* ]]; then
+                title="$input"
+            else
+                notify-send "YouTube" "Fetching title..."
+                title=$(yt-dlp --get-title "$input" 2>/dev/null | head -n1)
+                [ -z "$title" ] && title="$input"
+                url="$input"
+            fi
+            if grep -qF "$(escape_for_grep "#EXTINF:-1,$title")" "$YT_FILE"; then
+                notify-send "YouTube" "Already saved: $title"
+                return
+            fi
+            printf "#EXTINF:-1,%s\n%s\n" "$title" "$url" >> "$YT_FILE"
+            notify-send "YouTube" "Saved: $title"
+            ;;
+        "Remove")
+            if [ ! -s "$YT_FILE" ]; then
+                notify-send "YouTube" "Nothing saved."
+                return
+            fi
+            local entry
+            entry=$(grep "^#EXTINF" "$YT_FILE" | sed 's/#EXTINF:-1,//' | \
+                dmenu -i -l 20 -p "Remove which?")
+            [ -z "$entry" ] && return
+            sed -i "/^#EXTINF:-1,$(escape_for_grep "$entry")$/{N;d;}" "$YT_FILE"
+            notify-send "YouTube" "Removed: $entry"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Settings submenu
+# ---------------------------------------------------------------------------
+settings_menu() {
+    local choice
+    choice=$(printf \
+        "Playback Mode [$PLAYBACK_MODE]\nDownload Format [$DOWNLOAD_FORMAT]\nDownload Path [$DOWNLOAD_DIR]\nSearch Results [$SEARCH_RESULTS]" | \
+        dmenu -i -l 10 -p "Settings")
+    [ -z "$choice" ] && return
+
+    case "$choice" in
+        "Playback Mode"*)
+            local val
+            val=$(printf "audio\nvideo\nthumbnail" | \
+                dmenu -i -l 5 -p "Mode (current: $PLAYBACK_MODE)")
+            [ -z "$val" ] && return
+            save_setting "PLAYBACK_MODE" "$val"
+            notify-send "Settings" "Playback: $val"
+            ;;
+        "Download Format"*)
+            local val
+            val=$(printf "MP3\nFLAC\nM4A\nBest Audio" | \
+                dmenu -i -l 5 -p "Format (current: $DOWNLOAD_FORMAT)")
+            [ -z "$val" ] && return
+            save_setting "DOWNLOAD_FORMAT" "$val"
+            notify-send "Settings" "Download format: $val"
+            ;;
+        "Download Path"*)
+            local val
+            val=$(echo "$DOWNLOAD_DIR" | dmenu -p "Download path")
+            [ -z "$val" ] && return
+            mkdir -p "$val"
+            save_setting "DOWNLOAD_DIR" "$val"
+            notify-send "Settings" "Download path: $val"
+            ;;
+        "Search Results"*)
+            local val
+            val=$(printf "5\n10\n15\n20\n25" | \
+                dmenu -i -l 5 -p "Results count (current: $SEARCH_RESULTS)")
+            [ -z "$val" ] && return
+            save_setting "SEARCH_RESULTS" "$val"
+            notify-send "Settings" "Search results: $val"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+yt_status=""
+is_running "$YT_PID_FILE" && yt_status=" [PLAYING]"
+
+choice=$(printf "Search\nDownload\nHistory\nSaved\nStop\nSettings" | \
+    dmenu -i -l 10 -p "YouTube$yt_status")
+[ -z "$choice" ] && exit
+
+case "$choice" in
+    "Search")
+        search_flow "play"
+        ;;
+    "Download")
+        search_flow "download"
+        ;;
+    "History")
+        if [ ! -s "$YT_HISTORY_FILE" ]; then
+            notify-send "YouTube" "No history yet."
+            exit
+        fi
+        entry=$(grep "^#EXTINF" "$YT_HISTORY_FILE" | \
+            sed 's/#EXTINF:-1,//' | \
+            dmenu -i -l 20 -p "History")
+        [ -z "$entry" ] && exit
+        url=$(grep -A1 "^#EXTINF:-1,$(escape_for_grep "$entry")$" \
+            "$YT_HISTORY_FILE" | tail -n1)
+        [ -n "$url" ] && [[ "$url" != \#* ]] && play_url "$url" "$entry"
+        ;;
+    "Saved")
+        saved_menu
+        ;;
+    "Stop")
+        if is_running "$YT_PID_FILE"; then
+            kill_pid_file "$YT_PID_FILE"
+            notify-send "YouTube" "Stopped."
+        else
+            notify-send "YouTube" "Nothing playing."
+        fi
+        ;;
+    "Settings")
+        settings_menu
+        ;;
+esac

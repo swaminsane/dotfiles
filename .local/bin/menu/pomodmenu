@@ -1,140 +1,515 @@
 #!/usr/bin/env bash
+# ────────────────────────────────────────────────────────────
+#  Pomodoro Timer – reliable, feature‑rich, dmenu & CLI
+# ────────────────────────────────────────────────────────────
+set -o errexit -o nounset -o pipefail
+shopt -s extglob
 
-STATE_FILE="/tmp/pomodoro_state"
-PID_FILE="/tmp/pomodoro_pid"
+# ── Configuration (edit at will) ──────────────────────────
+POMODORO_TIME=1500                     # 25 min (focus)
+SHORT_BREAK=300                        # 5 min  (normal mode break)
+LONG_BREAK=900                         # 15 min (not used directly)
+SOUND_FOCUS_START="/usr/share/sounds/freedesktop/stereo/message.oga"
+SOUND_FOCUS_DONE="$HOME/.local/share/pomodoro/sounds/completion-focus-phase.opus"
+SOUND_BREAK_START="/usr/share/sounds/freedesktop/stereo/service-login.oga"
+SOUND_BREAK_DONE="/usr/share/sounds/freedesktop/stereo/window-attention.oga"
+SOUND_ALL_DONE="$HOME/.local/share/pomodoro/sounds/completion-pomo.opus"
+SOUND_TICK="/usr/share/sounds/freedesktop/stereo/click.oga"
+PLAYER="paplay"                        # paplay / aplay / pw-play …
+NOTIFY="notify-send"
+DMENU="dmenu"
+STATE_FILE="${TMPDIR:-/tmp}/pomodoro_state"
+PID_FILE="${TMPDIR:-/tmp}/pomodoro_pid"
+LOCK_FILE="${TMPDIR:-/tmp}/pomodoro.lock"
+LOG_FILE="${HOME}/.local/share/muhhwm/pomodoro/pomodoro.log"
+SUMMARY_FILE="${LOG_FILE}.summary"
+HISTORY_FILE="${HOME}/.local/share/muhhwm/pomodoro/custom_history"
+LOG_MAX_ENTRIES=3000
+HISTORY_MAX=20
+# ── End Configuration ──────────────────────────────────────
 
-# -------- CONFIG --------
-SOUND_START="/usr/share/sounds/freedesktop/stereo/message.oga"
-SOUND_DONE="/usr/share/sounds/freedesktop/stereo/complete.oga"
-SOUND_BREAK="/usr/share/sounds/freedesktop/stereo/service-login.oga"
-PLAYER="paplay"   # change to aplay if needed
-# ------------------------
+# ── helpers ────────────────────────────────────────────────
+msg()  { printf '%s\n' "$*"; }
+dbg()  { >&2 printf 'DBG: %s\n' "$*"; }
+die()  { >&2 printf 'FATAL: %s\n' "$*"; exit 1; }
+exists(){ command -v "$1" >/dev/null 2>&1; }
 
-notify() {
-    notify-send "Pomodoro" "$1"
+sec2human() {
+    local s=$1 h m
+    (( h = s / 3600, m = (s % 3600) / 60, s = s % 60 ))
+    (( h > 0 )) && printf '%dh%02dm' "$h" "$m"  ||  printf '%02dm %02ds' "$m" "$s"
 }
 
-sound() {
-    case "$1" in
-        start) $PLAYER "$SOUND_START" ;;
-        break) $PLAYER "$SOUND_BREAK" ;;
-        done)  $PLAYER "$SOUND_DONE" ;;
-    esac 2>/dev/null &
+parse_duration() {   # supports: 1h30m20s, 25m, 300, 15s, 1h, 3m
+    local input="$1" h=0 m=0 s=0 total
+    input="${input,,}"
+    input="${input// /}"
+    [[ "$input" =~ ([0-9]+)h ]] && h=${BASH_REMATCH[1]}
+    [[ "$input" =~ ([0-9]+)m ]] && m=${BASH_REMATCH[1]}
+    [[ "$input" =~ ([0-9]+)s ]] && s=${BASH_REMATCH[1]}
+    # pure number (no suffix) → minutes
+    [[ "$input" =~ ^[0-9]+$ ]] && m=$input
+    total=$(( h * 3600 + m * 60 + s ))
+    (( total > 0 )) || die "Duration must be positive: $1"
+    echo "$total"
 }
 
-format_time() {
-    mins=$(( $1 / 60 ))
-    secs=$(( $1 % 60 ))
-    printf "%02dm %02ds" "$mins" "$secs"
-}
-
-get_status() {
-    if [[ -f "$STATE_FILE" ]]; then
-        IFS="|" read -r label end < "$STATE_FILE"
-        now=$(date +%s)
-        remaining=$(( end - now ))
-
-        if (( remaining > 0 )); then
-            echo "$label ($(format_time $remaining) left)"
-        else
-            echo "Idle"
-        fi
+parse_custom() {   # "focus,break[,cycles]" → seconds_focus seconds_break cycles
+    local f_str b_str c_str="1"
+    IFS=',' read -r f_str b_str c_str <<< "$1"
+    f_str="${f_str## }"; f_str="${f_str%% }"
+    b_str="${b_str## }";   b_str="${b_str%% }"
+    c_str="${c_str## }"; c_str="${c_str%% }"
+    local foc_s brk_s cycles
+    foc_s=$(parse_duration "$f_str")
+    brk_s=$(parse_duration "$b_str")
+    c_str="${c_str:-1}"
+    if [[ "$c_str" == "i" ]]; then
+        cycles=-1
     else
-        echo "Idle"
+        [[ "$c_str" =~ ^[0-9]+$ ]] || die "Cycle count must be integer or 'i'"
+        cycles=$(( c_str ))
+        (( cycles > 0 )) || die "Cycle count must be positive"
+    fi
+    echo "$foc_s $brk_s $cycles"
+}
+
+lock()   { eval "exec $1>\"$LOCK_FILE\"; flock -n $1"; }
+unlock() { eval "exec $1>&-"; }
+
+# ── state management (atomic writes) ──────────────────────
+write_state() {
+    local tmp=${STATE_FILE}.$$
+    printf '%s\n' "$1" > "$tmp"
+    mv "$tmp" "$STATE_FILE"
+}
+
+read_state() {
+    [[ -f "$STATE_FILE" ]] && cat "$STATE_FILE" || echo "idle|0|0|0|0|idle|0|0"
+}
+
+session_is_active() {
+    [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
+
+# ── audio helpers ──────────────────────────────────────────
+sound() {
+    local sound_type="$1"
+    local file
+    case "$sound_type" in
+        focus_start)    file="$SOUND_FOCUS_START" ;;
+        focus_done)     file="$SOUND_FOCUS_DONE"  ;;
+        break_start)    file="$SOUND_BREAK_START" ;;
+        break_done)     file="$SOUND_BREAK_DONE"  ;;
+        all_done)       file="$SOUND_ALL_DONE"    ;;
+        tick)           file="$SOUND_TICK"        ;;
+        *) return 1 ;;
+    esac
+    [[ -f "$file" ]] && $PLAYER "$file" &>/dev/null &
+}
+
+notify() { $NOTIFY "Pomodoro" "$1" &>/dev/null; }
+
+# ── logging (clean single timestamp per line) ─────────────
+log_header="timestamp|event|session_type|focus_dur|break_dur|cycles_planned|cycles_completed|current_cycle|phase|remaining_sec|completion_pct|details"
+
+ensure_log() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    [[ -f "$LOG_FILE" ]] && return
+    echo "$log_header" > "$LOG_FILE"
+}
+
+log_event() {
+    # $1 = pipe-separated fields WITHOUT leading timestamp
+    ensure_log
+    printf '%s|%s\n' "$(date -Iseconds)" "$1" >> "$LOG_FILE"
+    # rotate
+    local lines
+    lines=$(wc -l < "$LOG_FILE")
+    if (( lines > LOG_MAX_ENTRIES )); then
+        tail -n "$LOG_MAX_ENTRIES" "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
     fi
 }
 
-run_phase() {
-    duration=$1
-    label=$2
-    sound_type=$3
-
-    end=$(( $(date +%s) + duration ))
-    echo "$label|$end" > "$STATE_FILE"
-
-    notify "$label started"
-    sound "$sound_type"
-
-    while true; do
-        now=$(date +%s)
-        remaining=$(( end - now ))
-
-        (( remaining <= 0 )) && break
-        sleep 1
-    done
-
-    notify "$label finished!"
-    sound done
+write_daily_summary() {
+    local today
+    today=$(date +%Y-%m-%d)
+    if [[ -f "$SUMMARY_FILE" ]] && grep -q "^=== DAILY SUMMARY $today ===" "$SUMMARY_FILE"; then
+        return
+    fi
+    mkdir -p "$(dirname "$SUMMARY_FILE")"
+    {
+        echo "=== DAILY SUMMARY $today ==="
+        echo
+        awk -F'|' -v today="$today" '
+        /^timestamp/ { next }
+        /^===/ { next }
+        {
+            date = substr($1,1,10)
+            event=$2; type=$3; foc=$4; brk=$5; phase=$9
+        }
+        date == today {
+            if (event == "PHASE_END" && phase == "Pomodoro") focus_sec += foc + 0
+            if (event == "PHASE_END" && phase == "Break")    break_sec += brk + 0
+            if (event == "SESSION_COMPLETE") completed++
+            if (event == "SESSION_STOP")    stopped++
+            if (event == "SESSION_START")   started++
+        }
+        END {
+            fh = int(focus_sec / 3600); fm = int((focus_sec % 3600) / 60)
+            bh = int(break_sec / 3600);  bm = int((break_sec % 3600) / 60)
+            printf "Sessions started:  %d\n", started
+            printf "Completed:         %d\n", completed
+            printf "Stopped early:     %d\n", stopped
+            printf "Total focus time:  %dh %02dm\n", fh, fm
+            printf "Total break time:  %dh %02dm\n", bh, bm
+        }' "$LOG_FILE"
+        echo
+    } >> "$SUMMARY_FILE"
 }
 
-run_timer() {
-    duration=$1
-    label=$2
-
-    stop_timer
-
-    (
-        run_phase "$duration" "$label" start
-        echo "idle|0" > "$STATE_FILE"
-    ) &
-
-    echo $! > "$PID_FILE"
+# ── status display ────────────────────────────────────────
+get_status_line() {
+    local line type foc brk tot cur phase end_or_rem paused rem label
+    line=$(read_state)
+    IFS='|' read -r type foc brk tot cur phase end_or_rem paused <<< "$line"
+    if [[ "$type" == "idle" ]]; then
+        echo "Idle"
+        return
+    fi
+    if (( paused == 1 )); then
+        rem=$end_or_rem
+    else
+        rem=$(( end_or_rem - $(date +%s) ))
+        (( rem < 0 )) && rem=0
+    fi
+    if [[ "$phase" == "Pomodoro" ]]; then
+        label="🍅 Focus"
+    else
+        label="☕ Break"
+    fi
+    local cycles_str
+    if (( tot == -1 )); then cycles_str="∞"; else cycles_str="$tot"; fi
+    echo "$label [cycle $cur/$cycles_str] – $(sec2human $rem) left"
 }
 
-custom_timer() {
-    pomo=$(printf "" | dmenu -p "Pomodoro (minutes):")
-    [[ -z "$pomo" ]] && exit
+show_status_popup() {
+    local stat
+    stat=$(get_status_line)
+    if exists "$DMENU"; then
+        echo "$stat" | $DMENU -p "Status" &
+    else
+        notify "$stat"
+    fi
+}
 
-    brk=$(printf "" | dmenu -p "Break (minutes):")
-    [[ -z "$brk" ]] && exit
+# ── history management for custom entries ─────────────────
+load_history() {
+    [[ -f "$HISTORY_FILE" ]] && tac "$HISTORY_FILE" 2>/dev/null | awk '!seen[$0]++' || true
+}
 
-    stop_timer
+add_history() {
+    local entry="$1"
+    mkdir -p "$(dirname "$HISTORY_FILE")"
+    local tmp="${HISTORY_FILE}.tmp"
+    {
+        echo "$entry"
+        if [[ -f "$HISTORY_FILE" ]]; then
+            grep -vxF "$entry" "$HISTORY_FILE" 2>/dev/null || true
+        fi
+    } | head -n "$HISTORY_MAX" > "$tmp"
+    mv "$tmp" "$HISTORY_FILE"
+}
 
-    (
-        run_phase "$((pomo*60))" "Pomodoro" start
-        run_phase "$((brk*60))" "Break" break
-        echo "idle|0" > "$STATE_FILE"
-    ) &
+# ── submenus for custom and timer ─────────────────────────
+custom_menu() {
+    local selection
+    selection=$( (load_history) | $DMENU -i -p "Custom (e.g. 50m,10m,3)")
+    [[ -z "$selection" ]] && return 1
+    add_history "$selection"
+    echo "$selection"
+}
 
-    echo $! > "$PID_FILE"
+timer_menu() {
+    local presets=("30s" "1m" "10m" "30m" "1h" "3h")
+    local selection
+    selection=$(printf '%s\n' "${presets[@]}" | $DMENU -i -p "Timer (e.g. 30s, 5m)")
+    [[ -z "$selection" ]] && return 1
+    echo "$selection"
+}
+
+# ── session control ───────────────────────────────────────
+kill_session() {
+    if session_is_active; then
+        kill "$(cat "$PID_FILE")" 2>/dev/null || true
+        rm -f "$PID_FILE"
+    fi
+}
+
+idle_state() { echo "idle|0|0|0|0|idle|0|0"; }
+
+stop_timer() {
+    if ! session_is_active; then
+        write_state "$(idle_state)"
+        return
+    fi
+    IFS='|' read -r type foc brk tot cur phase end_or_rem paused <<< "$(read_state)"
+    local remaining=$end_or_rem
+    if (( paused != 1 )); then
+        remaining=$(( end_or_rem - $(date +%s) ))
+        (( remaining < 0 )) && remaining=0
+    fi
+    local completed=$(( cur - 1 ))
+    local pct="N/A"
+    if (( tot != -1 )); then
+        pct=$(awk "BEGIN {printf \"%.1f\", ($completed/$tot)*100}")
+    fi
+    log_event "SESSION_STOP|$type|$foc|$brk|$tot|$completed|$cur|$phase|$remaining|$pct|Interrupted during $phase phase"
+    kill_session
+    write_state "$(idle_state)"
+    notify "Timer stopped"
+    write_daily_summary
 }
 
 pause_timer() {
-    [[ -f "$PID_FILE" ]] && kill -STOP "$(cat $PID_FILE)" && notify "Paused"
+    if ! session_is_active; then return; fi
+    IFS='|' read -r type foc brk tot cur phase end_or_rem paused <<< "$(read_state)"
+    if (( paused == 1 )); then return; fi
+    local remaining=$(( end_or_rem - $(date +%s) ))
+    (( remaining < 0 )) && remaining=0
+    write_state "$type|$foc|$brk|$tot|$cur|$phase|$remaining|1"
+    kill_session
+    log_event "SESSION_PAUSE|$type|$foc|$brk|$tot|$((cur-1))|$cur|$phase|$remaining|N/A|Paused by user"
+    notify "Paused ($(sec2human $remaining) left)"
 }
 
 resume_timer() {
-    [[ -f "$PID_FILE" ]] && kill -CONT "$(cat $PID_FILE)" && notify "Resumed"
+    IFS='|' read -r type foc brk tot cur phase rem paused <<< "$(read_state)"
+    if (( paused != 1 )); then return; fi
+    log_event "SESSION_RESUME|$type|$foc|$brk|$tot|$((cur-1))|$cur|$phase|$rem|N/A|Resumed"
+    start_session_internal "$type" "$foc" "$brk" "$tot" "$cur" "$phase" "$rem"
+    notify "Resumed ($(sec2human $rem) left)"
 }
 
-stop_timer() {
-    if [[ -f "$PID_FILE" ]]; then
-        kill "$(cat $PID_FILE)" 2>/dev/null
-        rm -f "$PID_FILE"
+skip_phase() {
+    if ! session_is_active; then return; fi
+    IFS='|' read -r type foc brk tot cur phase end_or_rem paused <<< "$(read_state)"
+    local remaining
+    if (( paused == 1 )); then
+        remaining=0
+    else
+        remaining=$(( end_or_rem - $(date +%s) ))
+        (( remaining < 0 )) && remaining=0
     fi
-    echo "idle|0" > "$STATE_FILE"
+    log_event "PHASE_SKIP|$type|$foc|$brk|$tot|$((cur-1))|$cur|$phase|$remaining|N/A|Skipped by user"
+    # determine next phase
+    local next_phase next_cycle next_rem
+    if [[ "$phase" == "Pomodoro" ]]; then
+        next_phase="Break"
+        next_cycle=$cur
+        next_rem=$brk
+    else
+        next_phase="Pomodoro"
+        next_cycle=$(( cur + 1 ))
+        next_rem=$foc
+    fi
+    # if no more cycles, end session
+    if (( tot != -1 && next_cycle > tot )); then
+        log_event "SESSION_COMPLETE|$type|$foc|$brk|$tot|$tot|$next_cycle|idle|0|100|Finished (all phases skipped)"
+        kill_session
+        write_state "$(idle_state)"
+        notify "All cycles completed!"
+        sound all_done
+        write_daily_summary
+        return
+    fi
+    kill_session
+    start_session_internal "$type" "$foc" "$brk" "$tot" "$next_cycle" "$next_phase" "$next_rem"
+    notify "Skipped to $next_phase"
 }
 
-status_popup() {
-    get_status | dmenu -p "Status"
+# ── background session process ─────────────────────────────
+run_session() {
+    # args: type foc brk tot cur phase remaining
+    local type="$1" foc="$2" brk="$3" tot="$4" cur="$5" phase="$6" rem="$7"
+    local label dur start_sound done_sound
+    trap 'exit 0' INT TERM
+
+    while true; do
+        if [[ "$phase" == "Pomodoro" ]]; then
+            dur=$foc
+            label="Pomodoro"
+            start_sound="focus_start"
+            done_sound="focus_done"
+        else
+            dur=$brk
+            label="Break"
+            start_sound="break_start"
+            done_sound="break_done"
+        fi
+
+        local end_time=$(( $(date +%s) + rem ))
+        write_state "$type|$foc|$brk|$tot|$cur|$label|$end_time|0"
+
+        notify "$label – $(sec2human $rem)" &
+        sound "$start_sound"
+
+        log_event "PHASE_START|$type|$foc|$brk|$tot|$((cur-1))|$cur|$label|$rem|N/A|Phase start"
+
+        # countdown with tick last 10s (focus only)
+        for (( i=rem; i>0; i-- )); do
+            if (( i <= 10 )) && [[ "$label" == "Pomodoro" ]]; then
+                sound tick
+            fi
+            sleep 1
+        done
+
+        notify "$label done!"
+        sound "$done_sound"
+        log_event "PHASE_END|$type|$foc|$brk|$tot|$((cur-1))|$cur|$label|0|N/A|Phase completed"
+
+        # handle timer / break‑free sessions
+        if (( brk == 0 )) && [[ "$label" == "Pomodoro" ]]; then
+            sound all_done
+            notify "Timer finished!"
+            log_event "SESSION_COMPLETE|$type|$foc|$brk|$tot|$tot|$cur|idle|0|100|Timer completed"
+            write_state "$(idle_state)"
+            rm -f "$PID_FILE"
+            write_daily_summary
+            exit 0
+        fi
+
+        # advance to next phase
+        if [[ "$phase" == "Pomodoro" ]]; then
+            phase="Break"
+        else
+            phase="Pomodoro"
+            cur=$(( cur + 1 ))
+        fi
+
+        if (( tot != -1 && cur > tot )); then
+            sound all_done
+            notify "All cycles completed! 🎉"
+            log_event "SESSION_COMPLETE|$type|$foc|$brk|$tot|$tot|$cur|idle|0|100|Finished"
+            write_state "$(idle_state)"
+            rm -f "$PID_FILE"
+            write_daily_summary
+            exit 0
+        fi
+
+        # set duration for the new phase
+        if [[ "$phase" == "Pomodoro" ]]; then rem=$foc; else rem=$brk; fi
+    done
 }
 
+start_session_internal() {
+    local type="$1" foc="$2" brk="$3" tot="$4" cur="$5" phase="$6" rem="$7"
+    kill_session
+    (
+        run_session "$type" "$foc" "$brk" "$tot" "$cur" "$phase" "$rem"
+    ) &
+    echo $! > "$PID_FILE"
+}
+
+start_session() {
+    local mode="$1" foc="$2" brk="$3" tot="$4"
+    log_event "SESSION_START|$mode|$foc|$brk|$tot|0|1|Pomodoro|$foc|N/A|Session started"
+    start_session_internal "$mode" "$foc" "$brk" "$tot" 1 "Pomodoro" "$foc"
+}
+
+start_timer() {
+    local dur="$1"
+    log_event "SESSION_START|timer|$dur|0|1|0|1|Pomodoro|$dur|N/A|Timer started"
+    start_session_internal "timer" "$dur" "0" "1" 1 "Pomodoro" "$dur"
+}
+
+# ── interactive menu ──────────────────────────────────────
 menu() {
-    status="$(get_status)"
-    printf "Start Pomodoro\nShort Break\nLong Break\nCustom\nPause\nResume\nStop\nStatus\n" \
-        | dmenu -i -p "$status"
+    local status_ln entries
+    status_ln=$(get_status_line)
+    entries=("Start Pomodoro" "Timer")
+    if session_is_active; then
+        entries+=("Pause" "Resume" "Skip" "Stop" "Status")
+    else
+        entries+=("Custom" "Status")
+    fi
+    printf '%s\n' "${entries[@]}" | $DMENU -i -p "$status_ln"
 }
 
-# -------- MAIN --------
-choice=$(menu)
+# ── command‑line interface ─────────────────────────────────
+usage() {
+    cat <<EOF
+Usage: $0 [command]
 
-case "$choice" in
-    "Start Pomodoro") run_timer 1500 "Pomodoro" ;;
-    "Short Break") run_timer 300 "Break" ;;
-    "Long Break") run_timer 900 "Long Break" ;;
-    "Custom") custom_timer ;;
-    "Pause") pause_timer ;;
-    "Resume") resume_timer ;;
-    "Stop") stop_timer ;;
-    "Status") status_popup ;;
+Commands:
+  start [normal]          Start infinite 25/5 cycles
+  start custom <str>     Custom, e.g. "50m,10m,3" or "1h30m,30m,i"
+  timer <duration>       Simple countdown, e.g. "30s", "10m", "1h"
+  pause                  Pause current timer
+  resume                 Resume paused timer
+  skip                   Skip current phase
+  stop                   Stop timer completely
+  status                 Print one-line status
+  status-popup           Show status in non‑blocking popup
+  help                   This help
+
+Without arguments, the interactive dmenu UI launches.
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+    cmd="${1:-}"; shift || true
+    case "$cmd" in
+        start)
+            mode="${1:-normal}"
+            if [[ "$mode" == "custom" ]]; then
+                shift
+                [[ $# -ge 1 ]] || die "Custom string required"
+                read -r f_s b_s cycles <<< "$(parse_custom "$1")"
+                start_session "custom" "$f_s" "$b_s" "$cycles"
+                add_history "$1"
+            else
+                start_session "normal" "$POMODORO_TIME" "$SHORT_BREAK" "-1"
+            fi
+            ;;
+        timer)
+            [[ $# -ge 1 ]] || die "Timer duration required (e.g. 30s, 10m, 1h)"
+            dur=$(parse_duration "$1")
+            start_timer "$dur"
+            ;;
+        pause)      pause_timer ;;
+        resume)     resume_timer ;;
+        skip)       skip_phase ;;
+        stop)       stop_timer ;;
+        status)     get_status_line ;;
+        status-popup) show_status_popup ;;
+        help|--help|-h) usage ;;
+        *) die "Unknown command: $cmd" ;;
+    esac
+    exit 0
+fi
+
+# ── interactive dmenu mode ─────────────────────────────────
+choice=$(menu)
+case "${choice}" in
+    "Start Pomodoro")
+        start_session "normal" "$POMODORO_TIME" "$SHORT_BREAK" "-1"
+        ;;
+    "Timer")
+        timer_str=$(timer_menu)
+        [[ -z "$timer_str" ]] && exit
+        dur=$(parse_duration "$timer_str")
+        start_timer "$dur"
+        ;;
+    "Custom")
+        custom_str=$(custom_menu)
+        [[ -z "$custom_str" ]] && exit
+        read -r f_s b_s cycles <<< "$(parse_custom "$custom_str")"
+        start_session "custom" "$f_s" "$b_s" "$cycles"
+        ;;
+    "Pause")   pause_timer ;;
+    "Resume")  resume_timer ;;
+    "Skip")    skip_phase ;;
+    "Stop")    stop_timer ;;
+    "Status")  show_status_popup ;;
 esac

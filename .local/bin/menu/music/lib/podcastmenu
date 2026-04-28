@@ -137,6 +137,12 @@ clear_position() {
 play_episode() {
     local url="$1" title="$2"
 
+    # ── OUTPUT_ONLY mode for mpvsearch integration ──
+    if [ "$OUTPUT_ONLY" = "1" ]; then
+        printf '%s\t%s\n' "$url" "$title"
+        exit 0
+    fi
+
     save_position   # save where the previous episode was up to
 
     kill_pid_file "$PODCAST_PID_FILE"

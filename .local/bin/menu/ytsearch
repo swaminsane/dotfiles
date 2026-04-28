@@ -1,0 +1,118 @@
+#!/bin/bash
+# ytsearch – fast YouTube search / URL resolver → dmenu → mpvbox
+# History stores Title	URL of played videos.  Selecting a title immediately
+# asks Audio/Video without re‑searching.
+
+HIST="$HOME/.cache/muhhwm/ytsearch_history"
+mkdir -p "$(dirname "$HIST")"
+touch "$HIST"
+
+DMENU="dmenu -i -l 20"
+YTDLP="yt-dlp --no-warnings"
+
+# --------------------------- helpers ---------------------------
+
+choose_mode_and_output() {
+    local url="$1" title="$2"
+    mode=$(printf "Audio\nVideo" | $DMENU -p "Mode for: ${title:0:50}")
+    [ -z "$mode" ] && exit 1
+
+    printf '%s\t%s\t%s\n' "$url" "$title" "$mode"
+    notify-send "ytsearch" "▶ ${title:0:60} ($mode)"
+
+    # Save to history (deduplicate)
+    local entry="$title	$url"
+    if ! grep -qFx "$entry" "$HIST"; then
+        echo "$entry" >> "$HIST"
+        # Keep history at most 100 entries
+        tail -n 100 "$HIST" > "${HIST}.tmp" && mv "${HIST}.tmp" "$HIST"
+    fi
+}
+
+search_and_pick() {
+    local query="$1"
+    notify-send "ytsearch" "Searching: $query"
+
+    local raw
+    raw=$($YTDLP "ytsearch20:$query" --print "%(webpage_url)s\t%(title)s\t%(duration_string)s" 2>/dev/null)
+    if [ -z "$raw" ]; then
+        notify-send "ytsearch" "No results found."
+        exit 1
+    fi
+
+    # Format for dmenu (indexed)
+    local display
+    display=$(echo "$raw" | awk -F'\t' '{printf "%2d. %-60s [%s]\n", NR, $2, $3}')
+
+    local sel
+    sel=$(echo "$display" | $DMENU -p "Pick video")
+    [ -z "$sel" ] && exit 1
+
+    local idx
+    idx=$(echo "$sel" | awk '{print $1}' | tr -d '.')
+
+    local url title
+    url=$(echo "$raw" | awk -F'\t' "NR==$idx {print \$1}")
+    title=$(echo "$raw" | awk -F'\t' "NR==$idx {print \$2}")
+    [ -z "$url" ] && { notify-send "ytsearch" "Invalid selection."; exit 1; }
+
+    choose_mode_and_output "$url" "$title"
+}
+
+# --------------------------- main ---------------------------
+
+# History suggestions (titles only)
+if [ -s "$HIST" ]; then
+    hist_titles=$(tac "$HIST" 2>/dev/null | awk -F'\t' '{print $1}')
+    [ -z "$hist_titles" ] && hist_titles=""
+fi
+
+# Menu with history + "New search…"
+if [ -n "$hist_titles" ]; then
+    menu=$(printf "%s\nNew search…" "$hist_titles")
+else
+    menu="New search…"
+fi
+
+choice=$(echo "$menu" | $DMENU -p "Search / History")
+[ -z "$choice" ] && exit 1
+
+# If user picked a history entry, jump directly to mode
+if [ "$choice" != "New search…" ] && grep -qF "$choice	" "$HIST" 2>/dev/null; then
+    url=$(grep -F "$choice	" "$HIST" | head -1 | awk -F'\t' '{print $2}')
+    choose_mode_and_output "$url" "$choice"
+    exit 0
+fi
+
+# Otherwise, ask for new query
+query=$(echo "" | $DMENU -p "Search / URL")
+[ -z "$query" ] && exit 1
+
+# If it's a URL
+if [[ "$query" =~ ^https?:// ]]; then
+    # Single video?
+    if [[ "$query" =~ youtube\.com/watch\?v= ]] && ! [[ "$query" =~ list= ]]; then
+        title=$($YTDLP --print "%(title)s" "$query" 2>/dev/null)
+        [ -z "$title" ] && title="$query"
+        choose_mode_and_output "$query" "$title"
+        exit 0
+    fi
+    # Playlist / channel: fetch and pick
+    raw=$($YTDLP --flat-playlist --playlist-end 30 --print "%(webpage_url)s\t%(title)s\t%(duration_string)s" "$query" 2>/dev/null)
+    if [ -z "$raw" ]; then
+        notify-send "ytsearch" "Could not fetch playlist."
+        exit 1
+    fi
+    display=$(echo "$raw" | awk -F'\t' '{printf "%2d. %-60s [%s]\n", NR, $2, $3}')
+    sel=$(echo "$display" | $DMENU -p "Pick video")
+    [ -z "$sel" ] && exit 1
+    idx=$(echo "$sel" | awk '{print $1}' | tr -d '.')
+    url=$(echo "$raw" | awk -F'\t' "NR==$idx {print \$1}")
+    title=$(echo "$raw" | awk -F'\t' "NR==$idx {print \$2}")
+    [ -z "$url" ] && exit 1
+    choose_mode_and_output "$url" "$title"
+    exit 0
+fi
+
+# Plain search
+search_and_pick "$query"

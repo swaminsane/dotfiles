@@ -1,0 +1,210 @@
+#!/bin/bash
+
+DMENU="dmenu -i -l 15"
+KHAL="/usr/bin/khal"
+VDIRSYNCER="vdirsyncer"
+CALDIR="$HOME/.local/share/khal/calendars"
+
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+time_options_start() {
+    local now next plus2 plus6 tmr9 tmr13 tmr18
+    now=$(date '+%Y-%m-%d %H:%M')
+    next=$(date -d "$(date '+%Y-%m-%d %H:00') +1 hour" '+%Y-%m-%d %H:00')
+    plus2=$(date -d "$(date '+%Y-%m-%d %H:00') +2 hours" '+%Y-%m-%d %H:00')
+    plus6=$(date -d "$(date '+%Y-%m-%d %H:00') +6 hours" '+%Y-%m-%d %H:00')
+    tmr9=$(date -d "tomorrow 09:00" '+%Y-%m-%d %H:00')
+    tmr13=$(date -d "tomorrow 13:00" '+%Y-%m-%d %H:00')
+    tmr18=$(date -d "tomorrow 18:00" '+%Y-%m-%d %H:00')
+
+    echo "$now (now)"
+    echo "$next (next hour)"
+    echo "$plus2 (+2h)"
+    echo "$plus6 (+6h)"
+    echo "$tmr9 (tomorrow 09:00)"
+    echo "$tmr13 (tomorrow 13:00)"
+    echo "$tmr18 (tomorrow 18:00)"
+}
+
+time_options_end() {
+    local next plus2 plus3 plus6 tmr9 tmr13 tmr18
+    next=$(date -d "$(date '+%Y-%m-%d %H:00') +1 hour" '+%Y-%m-%d %H:00')
+    plus2=$(date -d "$(date '+%Y-%m-%d %H:00') +2 hours" '+%Y-%m-%d %H:00')
+    plus3=$(date -d "$(date '+%Y-%m-%d %H:00') +3 hours" '+%Y-%m-%d %H:00')
+    plus6=$(date -d "$(date '+%Y-%m-%d %H:00') +6 hours" '+%Y-%m-%d %H:00')
+    tmr9=$(date -d "tomorrow 09:00" '+%Y-%m-%d %H:00')
+    tmr13=$(date -d "tomorrow 13:00" '+%Y-%m-%d %H:00')
+    tmr18=$(date -d "tomorrow 18:00" '+%Y-%m-%d %H:00')
+
+    echo "$next (next hour)"
+    echo "$plus2 (+2h)"
+    echo "$plus3 (+3h)"
+    echo "$plus6 (+6h)"
+    echo "$tmr9 (tomorrow 09:00)"
+    echo "$tmr13 (tomorrow 13:00)"
+    echo "$tmr18 (tomorrow 18:00)"
+}
+
+parse_time() {
+    local sel="$1"
+    if echo "$sel" | grep -q '('; then
+        echo "$sel" | awk '{print $1, $2}'
+    else
+        echo "$sel"
+    fi
+}
+
+recent_event_names() {
+    $KHAL list today 365d --format '{title}' 2>/dev/null | sort -u | head -15
+}
+
+do_sync() {
+    $VDIRSYNCER sync 2>/dev/null
+    notify-send "Calendar" "Sync complete" 2>/dev/null
+}
+
+# Convert "YYYY-MM-DD HH:MM" → YYYYMMDDTHHMMSS (ICS DTSTART)
+datetime_to_ics() {
+    local datetime="$1"
+    echo "$datetime" | sed 's/[-: ]//g' | sed 's/\([0-9]\{8\}\)\([0-9]\{6\}\)/\1T\2/'
+}
+
+# Delete by title and exact start datetime (full date included)
+delete_by_title_and_start() {
+    local title="$1" start_dt="$2"
+    local dtstart_pattern
+    dtstart_pattern=$(datetime_to_ics "$start_dt")  # e.g. 20260427T191900
+    local file
+    file=$(grep -rl "SUMMARY:$title" "$CALDIR" 2>/dev/null | while IFS= read -r f; do
+        if grep -q "DTSTART.*$dtstart_pattern" "$f"; then
+            echo "$f"
+            break
+        fi
+    done)
+    if [ -n "$file" ]; then
+        rm -f "$file"
+        return 0
+    fi
+    return 1
+}
+
+# ── add event ─────────────────────────────────────────────────────────────────
+
+add_event() {
+    local start_sel
+    start_sel=$(time_options_start | $DMENU -p "Start time:")
+    [ -z "$start_sel" ] && return
+    local start
+    start=$(parse_time "$start_sel")
+
+    local end_sel
+    end_sel=$(time_options_end | $DMENU -p "End time:")
+    [ -z "$end_sel" ] && return
+    local end
+    end=$(parse_time "$end_sel")
+
+    local name_opts
+    name_opts=$(recent_event_names)
+    local name
+    name=$(echo "$name_opts" | $DMENU -p "Event name:")
+    [ -z "$name" ] && return
+
+    $KHAL new "$start" "$end" "$name"
+    notify-send "Calendar" "Added: $name" 2>/dev/null
+    do_sync &
+}
+
+# ── edit event ────────────────────────────────────────────────────────────────
+
+edit_event() {
+    local title="$1" old_start="$2"
+
+    local start_sel
+    start_sel=$(time_options_start | $DMENU -p "New start time:")
+    [ -z "$start_sel" ] && return
+    local start
+    start=$(parse_time "$start_sel")
+
+    local end_sel
+    end_sel=$(time_options_end | $DMENU -p "New end time:")
+    [ -z "$end_sel" ] && return
+    local end
+    end=$(parse_time "$end_sel")
+
+    local name_opts
+    name_opts=$(recent_event_names)
+    local name
+    name=$(printf "%s\n%s" "$title" "$name_opts" | $DMENU -p "New event name:")
+    [ -z "$name" ] && return
+
+    if delete_by_title_and_start "$title" "$old_start"; then
+        $KHAL new "$start" "$end" "$name"
+        notify-send "Calendar" "Updated: $name" 2>/dev/null
+        do_sync &
+    else
+        notify-send "Calendar" "Could not find old event to edit" 2>/dev/null
+    fi
+}
+
+# ── event action ──────────────────────────────────────────────────────────────
+
+event_action() {
+    local event_line="$1"
+
+    # line format from khal: "2026-04-27 19:19-2026-04-28 09:00 jf"
+    # extract start datetime, title (everything after the end time)
+    local start_dt title
+    start_dt=$(echo "$event_line" | awk -F'-' '{print $1}')          # "YYYY-MM-DD HH:MM"
+    title=$(echo "$event_line" | sed 's/^[0-9]\{4\}-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]-[0-9]\{4\}-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9] //')
+
+    local action
+    action=$(printf "%s\nEdit\nDelete" "$event_line" | $DMENU -p "Action:")
+    [ -z "$action" ] && return
+
+    case "$action" in
+        "Edit")
+            edit_event "$title" "$start_dt"
+            ;;
+        "Delete")
+            if delete_by_title_and_start "$title" "$start_dt"; then
+                notify-send "Calendar" "Deleted: $title" 2>/dev/null
+                do_sync &
+            else
+                notify-send "Calendar" "Could not find: $title" 2>/dev/null
+            fi
+            ;;
+        *)
+            ;;
+    esac
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+main() {
+    # Single‑line, full datetime format – no multi‑day splitting
+    local events
+    events=$($KHAL list "$@" --format "{start}-{end} {title}" 2>/dev/null)
+
+    local selection
+    selection=$(printf "%s\n-------------\nAdd event\nSync" "$events" | $DMENU)
+    [ -z "$selection" ] && return
+
+    case "$selection" in
+        "Add event")
+            add_event
+            ;;
+        "Sync")
+            do_sync &
+            ;;
+        "-------------")
+            return
+            ;;
+        *)
+            event_action "$selection"
+            ;;
+    esac
+}
+
+main "$@"

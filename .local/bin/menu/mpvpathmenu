@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+# ============================================================================
+# Directory array – add the paths you want to search recursively.
+# ============================================================================
+directories=(
+    "$HOME/sync/music"
+    "$HOME/sync/video"
+    "$HOME/Music"
+    "$HOME/Videos"
+    # "/mnt/data/shared"
+)
+
+# ----------------------------------------------------------------------------
+# Optional dmenu settings
+# ----------------------------------------------------------------------------
+DMENU_LINES=20          # Number of lines dmenu shows
+DMENU_PROMPT="File:"    # Prompt text in dmenu
+DMENU_FONT=""           # Optional font, e.g. "Monospace-12"
+
+# ----------------------------------------------------------------------------
+# Build dmenu arguments – note the added '-i' for case‑insensitive matching
+# ----------------------------------------------------------------------------
+dmenu_args=("-i" "-l" "$DMENU_LINES" "-p" "$DMENU_PROMPT")
+if [[ -n "$DMENU_FONT" ]]; then
+    dmenu_args+=("-fn" "$DMENU_FONT")
+fi
+
+# ----------------------------------------------------------------------------
+# Find all regular files recursively in the given directories.
+# (Excludes hidden files/directories by default)
+# ----------------------------------------------------------------------------
+find_cmd=("find")
+for dir in "${directories[@]}"; do
+    expanded_dir=$(eval echo "$dir")
+    if [[ -d "$expanded_dir" ]]; then
+        find_cmd+=("$expanded_dir")
+    else
+        echo "Warning: '$expanded_dir' is not a valid directory – skipping" >&2
+    fi
+done
+
+if [[ ${#find_cmd[@]} -eq 1 ]]; then
+    echo "Error: No valid directories found." >&2
+    exit 1
+fi
+
+find_cmd+=("-type" "f" "-not" "-path" "'*/.*'")
+
+# ----------------------------------------------------------------------------
+# Pipe the sorted file list into dmenu and capture the selection
+# ----------------------------------------------------------------------------
+selected_file=$( "${find_cmd[@]}" 2>/dev/null | sort -V | dmenu "${dmenu_args[@]}" )
+
+# ----------------------------------------------------------------------------
+# Output the selected path (or nothing if cancelled)
+# ----------------------------------------------------------------------------
+if [[ -n "$selected_file" ]]; then
+    echo "$selected_file"
+fi

@@ -128,6 +128,11 @@ play_channel() {
     channel="$1"
     url="$2"
 
+    if [ "$OUTPUT_ONLY" = "1" ]; then
+        printf '%s\t%s\n' "$url" "$channel"
+        exit 0
+    fi
+
     notify "Playing: $channel"
     echo "$channel" > /tmp/tvapp.state
     $PLAYER "$url"

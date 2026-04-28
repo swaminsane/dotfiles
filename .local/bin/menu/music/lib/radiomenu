@@ -18,6 +18,10 @@ case "$choice" in
         [ -z "$station" ] && exit
         url=$(grep -A1 "^#EXTINF:-1,$station$" "$RADIO_FILE" | tail -n1)
         if [ -n "$url" ]; then
+            if [ "$OUTPUT_ONLY" = "1" ]; then
+                printf '%s\t%s\n' "$url" "$station"
+                exit 0
+            fi
             kill_pid_file "$RADIO_PID_FILE"
             kill_pid_file "$YT_PID_FILE"
             kill_pid_file "$PODCAST_PID_FILE"

@@ -1,0 +1,29 @@
+
+#!/bin/bash
+# mpvsourcemenu – unified media source picker for mpvbox
+
+choice=$(printf "File picker\nYt Music\nYt\nTwitch\nPodcasts\nRadio\nTV" | dmenu -i -l 7 ) || exit 0
+
+case "$choice" in
+    "File picker")
+        exec ~/.local/bin/menu/mpvpathmenu
+        ;;
+    "Yt Music")
+        exec env OUTPUT_ONLY=1 ~/.local/bin/menu/music/lib/ytmenu
+        ;;
+    "Yt")
+        exec env OUTPUT_ONLY=1 ~/.local/bin/menu/ytdmenu
+        ;;
+    "Twitch")
+        exec env OUTPUT_ONLY=1 ~/.local/bin/menu/twitchmenu
+        ;;
+    "Podcasts")
+        exec env OUTPUT_ONLY=1 ~/.local/bin/menu/music/lib/podcastmenu
+        ;;
+    "Radio")
+        exec env OUTPUT_ONLY=1 ~/.local/bin/menu/music/lib/radiomenu
+        ;;
+    "TV")
+        exec env OUTPUT_ONLY=1 ~/.local/bin/menu/tvmenu
+        ;;
+esac

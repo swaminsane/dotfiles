@@ -1,0 +1,104 @@
+#!/bin/bash
+# twitchtv – Twitch channel manager → mpvbox (quality: 480p)
+# Uses yt‑dlp to fetch the exact stream URL, so quality is always applied.
+# Usage: twitchtv                   → interactive dmenu
+#        OUTPUT_ONLY=1 twitchtv     → prints URL\tTitle\tMode (for unified menu)
+
+CHANNELS_FILE="$HOME/.cache/muhhwm/twitch_channels"
+mkdir -p "$(dirname "$CHANNELS_FILE")"
+touch "$CHANNELS_FILE"
+
+DMENU="dmenu -i -l 20"
+
+# Quality – 480p, change to 720p or 360p as needed.
+QUALITY="bestvideo[height<=480]+bestaudio/best"
+
+# ------------------------------------------------------------------------
+# play a channel (always plays – no live‑check)
+# ------------------------------------------------------------------------
+play_channel() {
+    local user="$1"
+    local page_url="https://www.twitch.tv/$user"
+
+    if [ "$OUTPUT_ONLY" = "1" ]; then
+        printf '%s\t%s\t%s\n' "$page_url" "$user" "video"
+        exit 0
+    fi
+
+    # 1. Get the real stream URL at the chosen quality (yt‑dlp -g)
+    local stream_url
+    stream_url=$(yt-dlp -f "$QUALITY" -g "$page_url" 2>/dev/null)
+    if [ -z "$stream_url" ]; then
+        notify-send "Twitch" "$user not live or stream unreachable"
+        return 1
+    fi
+
+    # 2. Play the plain URL with mpv (no yt‑dlp involved anymore)
+    notify-send "Twitch" "Playing: $user"
+    mpv --really-quiet "$stream_url" &
+}
+
+# ------------------------------------------------------------------------
+# add channel
+# ------------------------------------------------------------------------
+add_channel() {
+    local sep=$(printf '%0.s-' {1..20})
+    local name
+    name=$(echo "$sep" | $DMENU -p "Twitch username:")
+    [ -z "$name" ] && exit 1
+    name=$(echo "$name" | sed 's/^-----//')
+    name=$(echo "$name" | sed 's/^@//; s/ //g')
+    [ -z "$name" ] && exit 1
+    if grep -qix "$name" "$CHANNELS_FILE"; then
+        notify-send "Twitch" "$name already added."
+        exit 0
+    fi
+    echo "$name" >> "$CHANNELS_FILE"
+    notify-send "Twitch" "Added: $name"
+}
+
+# ------------------------------------------------------------------------
+# remove channel
+# ------------------------------------------------------------------------
+remove_channel() {
+    if [ ! -s "$CHANNELS_FILE" ]; then
+        notify-send "Twitch" "No channels saved yet."
+        exit 1
+    fi
+
+    local selected
+    selected=$(cat "$CHANNELS_FILE" | $DMENU -p "Remove channel")
+    [ -z "$selected" ] && exit 1
+
+    grep -vix "$selected" "$CHANNELS_FILE" > "${CHANNELS_FILE}.tmp"
+    mv "${CHANNELS_FILE}.tmp" "$CHANNELS_FILE"
+    notify-send "Twitch" "Removed: $selected"
+}
+
+# ------------------------------------------------------------------------
+# list channels
+# ------------------------------------------------------------------------
+list_channels() {
+    if [ ! -s "$CHANNELS_FILE" ]; then
+        notify-send "Twitch" "No channels saved yet."
+        exit 1
+    fi
+
+    local selected
+    selected=$(cat "$CHANNELS_FILE" | $DMENU -p "Pick channel")
+    [ -z "$selected" ] && exit 1
+
+    play_channel "$selected"
+}
+
+# ------------------------------------------------------------------------
+# main
+# ------------------------------------------------------------------------
+choice=$(printf "Channels\nAdd\nRemove" | $DMENU -p "Twitch")
+[ -z "$choice" ] && exit 1
+
+case "$choice" in
+    "Channels") list_channels ;;
+    "Add")      add_channel ;;
+    "Remove")   remove_channel ;;
+esac

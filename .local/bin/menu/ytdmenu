@@ -90,6 +90,12 @@ action_menu() {
 # ── Play ──────────────────────────────────────────────────────────────────────
 do_play() {
     local url="$1" title="$2"
+    
+    if [ "$OUTPUT_ONLY" = "1" ]; then
+        printf '%s\t%s\n' "$url" "$title"
+        exit 0
+    fi
+
     local fmt; fmt=$(quality_flag)
     notify "▶ Playing [$QUALITY]: $(shorten "$title")" "normal"
     save_history "$title" "$url"

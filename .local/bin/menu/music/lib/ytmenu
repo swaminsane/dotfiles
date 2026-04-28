@@ -78,6 +78,10 @@ set_dl_args() {
 
 play_url() {
     local url="$1" title="$2"
+    if [ "$OUTPUT_ONLY" = "1" ]; then
+    printf '%s\t%s\t%s\n' "$url" "$title" "$PLAYBACK_MODE"
+        exit 0
+    fi
     kill_pid_file "$YT_PID_FILE"
     kill_pid_file "$RADIO_PID_FILE"
     kill_pid_file "$PODCAST_PID_FILE"
@@ -87,7 +91,7 @@ play_url() {
         "audio")
            mpv --really-quiet \
     --ytdl-format="bestaudio" \
-    --vid=no \                       # <-- disable video track entirely
+    --vid=no \
     --force-window=yes \
     --window-minimized=yes \
     --input-ipc-server="$YT_SOCKET" \
