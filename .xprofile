@@ -28,8 +28,7 @@ if [ "$WM" = "muhhwm" ]; then
     (sleep 1 && /usr/local/bin/muhhpanl) &
     dunst &
     picom &
-#    feh --bg-fill --randomize $HOME/.local/share/wallpapers/*/
-    feh --bg-fill --randomize $HOME/.local/share/wallpapers/free/
+    feh --bg-fill --randomize $HOME/.local/share/wallpapers/
     nm-applet &
     /usr/bin/kdeconnectd &
 fi

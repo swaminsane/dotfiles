@@ -108,14 +108,8 @@ _format_time() {
     local us=$1
     local s=$((us / 1000000))
     local m=$((s / 60))
-    local h=$((m / 60))
-    m=$((m % 60))
     s=$((s % 60))
-    if ((h > 0)); then
-        printf "%d:%02d:%02d" $h $m $s
-    else
-        printf "%d:%02d" $m $s
-    fi
+    printf "%d:%02d" $m $s
 }
 
 _parse_offset() {
@@ -185,8 +179,29 @@ cmd_play_pause() {
 
 cmd_quit() {
     local bus=$(_resolve_bus "${1:-}")
+
+    # If this is a Firefox instance, just stop playback (killing the whole browser is evil)
+    if [[ "$bus" == *firefox* ]]; then
+        busctl --user call "$bus" /org/mpris/MediaPlayer2 \
+            org.mpris.MediaPlayer2.Player Stop
+        return
+    fi
+
+    # 1. Try the optional MPRIS Quit command (mpv, VLC, etc.)
     busctl --user call "$bus" /org/mpris/MediaPlayer2 \
-        org.mpris.MediaPlayer2 Quit
+        org.mpris.MediaPlayer2 Quit 2>/dev/null && return
+
+    # 2. Fallback: find the process PID via D‑Bus
+    local pid
+    pid=$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+          org.freedesktop.DBus GetConnectionUnixProcessID \
+          s "$bus" 2>/dev/null | awk '{print $2}')
+
+    if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]]; then
+        kill "$pid" 2>/dev/null && return
+    fi
+
+    die "Could not quit player '$bus'."
 }
 
 cmd_progress() {
